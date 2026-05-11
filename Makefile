@@ -1,4 +1,4 @@
-.PHONY: setup index ask eval benchmark benchmark-check check smoke harness-smoke test test-regression api api-docker demo demo-docker real-eval real-eval-delta real-eval-baseline-update real-eval-history-render real-eval-history-check real-eval-with-judge clean
+.PHONY: setup index ask eval benchmark benchmark-check check smoke harness-smoke test test-regression api api-docker demo demo-docker real-eval real-eval-delta real-eval-baseline-update real-eval-history-render real-eval-history-check real-eval-with-judge synthetic-judge leaderboard leaderboard-check clean
 
 PYTHON ?= python3
 VENV ?= .venv
@@ -121,6 +121,31 @@ real-eval-history-check:
 real-eval-with-judge: real-eval
 	$(PYTHON) scripts/llm_judge.py
 	@echo "Run \`make real-eval-baseline-update\` to fold the judge aggregate into the committable baseline."
+
+# Run the LLM judge over the public synthetic eval summary (ADR 0012).
+# Default backend `stub` is deterministic and runs in CI; set
+# BIDMATE_SYNTHETIC_JUDGE_BACKEND=openai_compatible plus the shared
+# BIDMATE_JUDGE_* credentials for a live RAGAS-style signal. Writes a
+# committable aggregate and a git-ignored per-case file.
+synthetic-judge:
+	$(PYTHON) -m eval.synthetic_judge \
+	  --summary reports/eval_summary.json \
+	  --aggregate reports/synthetic_judge.aggregate.json \
+	  --local reports/synthetic_judge.local.json
+
+# Append a history snapshot of the current eval_summary.json + render
+# the leaderboard markdown table and the docs/leaderboard.md Chart.js
+# page. Mirrors the real-data history pattern but for the public
+# synthetic surface (issue #166). CI runs this automatically on every
+# merge to main via .github/workflows/leaderboard.yml.
+leaderboard:
+	$(PYTHON) scripts/write_synthetic_history.py
+	$(PYTHON) scripts/leaderboard.py
+
+# Verify the rendered leaderboard artifacts are up to date with the
+# current reports/history/ contents. Suitable for pre-PR gating.
+leaderboard-check:
+	$(PYTHON) scripts/leaderboard.py --check
 
 clean:
 	rm -rf data/index outputs reports
