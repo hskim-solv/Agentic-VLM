@@ -12,7 +12,6 @@
 | **로컬 1분 시작** | `make index && make demo` | `http://localhost:8501` |
 | **데모 비디오 (2~3분)** | 녹화 가이드: [docs/deployment.md#recording-the-demo-video](docs/deployment.md#recording-the-demo-video) | 라이브 배포 후 README 상단에 embed 예정 |
 | **📈 Live leaderboard** | [https://hskim-solv.github.io/BidMate-DocAgent/leaderboard/](https://hskim-solv.github.io/BidMate-DocAgent/leaderboard/) | 메인 브랜치 머지마다 자동 누적되는 headline metric time-series + bootstrap CI 밴드 (ADR 0005 aggregate-only) |
-| **데모 비디오 (2~3분)** | 후속 작업 — 가이드: [docs/deployment.md#recording-the-demo-video](docs/deployment.md#recording-the-demo-video) | 배포·녹화 완료 후 본 표 상단에 embed |
 | **엔지니어링 노트** | [hskim-solv.github.io/BidMate-DocAgent](https://hskim-solv.github.io/BidMate-DocAgent/) | 결정의 *왜*와 측정 결과를 정리한 GitHub Pages 사이트 (블로그 3편 + 1-page deep-dive) |
 
 데모 UI는 3개 pipeline preset(`naive_baseline` · `agentic_full` · `agentic_full_llm`)을 라디오 버튼으로 전환하고, 같은 질의에 대한 **extractive vs LLM 합성(ADR 0011)** 답변을 side-by-side로 비교합니다. 모든 claim은 evidence chunk_id로 추적 가능하며, abstention 케이스(예: `기관 A의 양자암호 적용 방안은?`)는 🔴 insufficient status로 명시되어 *근거 부족을 정직하게 인정*합니다.
