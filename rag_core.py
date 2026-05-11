@@ -28,6 +28,13 @@ DEFAULT_CHUNK_MAX_CHARS = 520
 DEFAULT_CHUNK_OVERLAP_SENTENCES = 1
 VALID_CHUNKING_STRATEGIES = {"auto", "section", "fixed"}
 VALID_RETRIEVAL_MODES = {"flat", "hierarchical"}
+
+# Hard cap on the per-query agent loop. ``metadata_stage_sequence`` today
+# returns at most ["strict", "reduced", "relaxed"] (3 stages). This constant
+# pins the contract — any future addition to the stage list that pushes
+# past 3 must update this value and explain why in the PR description.
+MAX_AGENT_ITERATIONS = 3
+
 DEFAULT_CLI_PIPELINE_NAME = "naive_baseline"
 DEFAULT_RAG_PIPELINE_NAME = "agentic_full"
 PIPELINE_CONFIG_KEYS = (
@@ -2216,13 +2223,47 @@ def metadata_terms_for_verification(analysis: dict[str, Any]) -> set[str]:
     return set(metadata_tokens(" ".join(values)))
 
 
+EVIDENCE_BOUNDARY = "\n[---EVIDENCE_BOUNDARY---]\n"
+
+_CHAT_TEMPLATE_TOKEN_RE = re.compile(
+    r"<\|(?:im_start|im_end|system|user|assistant|tool|begin_of_text|end_of_text|fim_[a-z_]+|endoftext)\|>",
+    re.IGNORECASE,
+)
+_ROLE_TAG_LINE_RE = re.compile(
+    r"(?im)^[ \t]*(SYSTEM|ASSISTANT|USER|TOOL)\s*:\s*.+$"
+)
+_INSTRUCTION_OVERRIDE_LINE_RE = re.compile(
+    r"(?im)^[ \t]*(?:ignore|disregard|forget|override|bypass)\b[^.\n]{0,80}?\b(?:instructions?|prompts?|rules?|directives?|system|guidance)\b.*$"
+)
+
+
+def neutralize_instruction_patterns(text: str) -> str:
+    """Neutralize chat-template and instruction-override patterns in document-controlled text.
+
+    Wraps suspicious lines with ``[INSTRUCTION_LIKE]...[/INSTRUCTION_LIKE]``
+    and replaces chat template tokens with ``[REDACTED_CHAT_TOKEN]`` so they
+    cannot impersonate role boundaries in downstream LLM consumers. Content
+    is preserved (citations remain readable) — see ADR 0008.
+    """
+    if not text:
+        return text
+    out = _CHAT_TEMPLATE_TOKEN_RE.sub("[REDACTED_CHAT_TOKEN]", text)
+    out = _ROLE_TAG_LINE_RE.sub(
+        lambda m: f"[INSTRUCTION_LIKE]{m.group(0)}[/INSTRUCTION_LIKE]", out
+    )
+    out = _INSTRUCTION_OVERRIDE_LINE_RE.sub(
+        lambda m: f"[INSTRUCTION_LIKE]{m.group(0)}[/INSTRUCTION_LIKE]", out
+    )
+    return out
+
+
 def evidence_text_for_verification(item: dict[str, Any]) -> str:
     parts = [
-        item.get("title", ""),
-        item.get("agency", ""),
-        item.get("project", ""),
-        item.get("section", ""),
-        item.get("text", ""),
+        neutralize_instruction_patterns(str(item.get("title", "") or "")),
+        neutralize_instruction_patterns(str(item.get("agency", "") or "")),
+        neutralize_instruction_patterns(str(item.get("project", "") or "")),
+        neutralize_instruction_patterns(str(item.get("section", "") or "")),
+        neutralize_instruction_patterns(str(item.get("text", "") or "")),
     ]
     metadata = item.get("metadata")
     if isinstance(metadata, dict):
@@ -2230,7 +2271,7 @@ def evidence_text_for_verification(item: dict[str, Any]) -> str:
             if value is None or value == "":
                 continue
             parts.extend(METADATA_EVIDENCE_LABELS.get(str(key), (str(key),)))
-            parts.append(str(value))
+            parts.append(neutralize_instruction_patterns(str(value)))
     return " ".join(str(part) for part in parts if str(part).strip())
 
 
@@ -3381,6 +3422,12 @@ def run_rag_query(
         metadata_first=metadata_first,
         verifier_retry=verifier_retry,
     )
+    if len(stage_sequence) > MAX_AGENT_ITERATIONS:
+        raise RuntimeError(
+            f"stage_sequence length {len(stage_sequence)} exceeds "
+            f"MAX_AGENT_ITERATIONS={MAX_AGENT_ITERATIONS}; "
+            "update MAX_AGENT_ITERATIONS and revisit the loop contract."
+        )
     stage_attempts = []
     retry_count = 0
     plan: dict[str, Any] = {}
@@ -3434,6 +3481,10 @@ def run_rag_query(
             break
         if attempt_index < len(stage_sequence) - 1:
             retry_count += 1
+
+    retrieved_chunk_ids: list[str] = [
+        str(item.get("chunk_id") or "") for item in evidence if item.get("chunk_id")
+    ]
 
     if verified or analysis.get("query_type") == "comparison":
         evidence = select_supporting_evidence(analysis, evidence)
@@ -3500,6 +3551,7 @@ def run_rag_query(
             "verification_reasons": (answer.get("status_reason") or {}).get("verification_reasons") or verification_reasons,
             "verification_topics": verification_topics(analysis),
             "filter_stage_attempts": stage_attempts,
+            "retrieved_chunk_ids": retrieved_chunk_ids,
             "final_relaxation_reason": stage_attempts[-2]["verification_reasons"] if retry_count and len(stage_attempts) >= 2 else [],
             "context_resolution": context_resolution,
             "metadata_resolution": metadata_resolution,
