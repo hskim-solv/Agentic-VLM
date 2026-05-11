@@ -206,21 +206,24 @@ Planner와 query rewrite 결정은 `outputs/answer.json`의 `trace`와 eval 실�
 | Evidence | Claim Citation Alignment | 0.974 (0.921–1.000) |
 | Evidence | Answer Format Compliance | 0.667 (0.524–0.810) |
 | Abstention | Abstention Accuracy | 0.222 (0.000–0.556) |
-| System | Latency (p50/p95) | p50 2.2ms / p95 6.2ms |
+| System | Latency (p50/p95) | p50 1.7ms / p95 3.8ms |
 | System | Retry Rate | 0.000 (0.000–0.000) |
 
 ### Ablation comparison
 
 | Run | Pipeline | Top-k | Metadata-first | Rerank | Verifier/Retry | Accuracy | Groundedness | Citation | Claim Align | Format | Abstention | Retry | Latency p95 |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| naive_baseline | naive_baseline | 4 | off | off | off | 0.844±0.12 | 0.714±0.14 | 0.512±0.12 | 0.974±0.05 | 0.667 | 0.300 | 0.000 | 6.2ms |
-| full | agentic_full | auto | on | on | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 2.9ms |
-| full_llm | agentic_full_llm | auto | on | on | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 3.0ms |
+| naive_baseline | naive_baseline | 4 | off | off | off | 0.844±0.12 | 0.714±0.14 | 0.512±0.12 | 0.974±0.05 | 0.667 | 0.300 | 0.000 | 3.8ms |
+| full | agentic_full | auto | on | on | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 4.1ms |
+| full_llm | agentic_full_llm | auto | on | on | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 9.3ms |
 | hierarchical | agentic_full | auto | on | on | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 3.3ms |
-| no_metadata_first | agentic_full | auto | off | on | on | 0.844±0.12 | 0.881±0.10 | 0.679±0.11 | 0.968±0.06 | 0.857 | 1.000 | 0.000 | 3.0ms |
+| no_metadata_first | agentic_full | auto | off | on | on | 0.844±0.12 | 0.881±0.10 | 0.679±0.11 | 0.968±0.06 | 0.857 | 1.000 | 0.000 | 3.1ms |
 | no_rerank | agentic_full | auto | on | off | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 3.0ms |
 | no_verifier_retry | agentic_full | auto | on | on | off | 0.906±0.12 | 0.762±0.14 | 0.762±0.14 | 1.000±0.00 | 0.714 | 0.300 | 0.000 | 2.7ms |
-| hybrid_bm25 | agentic_full | auto | on | on | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 3.2ms |
+| hybrid_bm25 | agentic_full | auto | on | on | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 3.0ms |
+| hybrid_bm25_k10 | agentic_full | auto | on | on | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 3.0ms |
+| hybrid_bm25_k30 | agentic_full | auto | on | on | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 3.3ms |
+| hybrid_bm25_k100 | agentic_full | auto | on | on | on | 0.906±0.12 | 0.929±0.07 | 0.905±0.08 | 1.000±0.00 | 0.905 | 1.000 | 0.310 | 3.1ms |
 
 > Values shown as `mean±half-width` for the 95% bootstrap CI (n=cases, 1000 resamples, seed=17). The non-CI columns (Format, Abstention, Retry) are point estimates; their CIs appear in the detailed main table above.
 <!-- METRICS_TABLE:END -->
