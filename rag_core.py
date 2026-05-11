@@ -30,6 +30,15 @@ DEFAULT_CHUNK_MAX_CHARS = 520
 DEFAULT_CHUNK_OVERLAP_SENTENCES = 1
 VALID_CHUNKING_STRATEGIES = {"auto", "section", "fixed"}
 VALID_RETRIEVAL_MODES = {"flat", "hierarchical"}
+VALID_RETRIEVAL_BACKENDS = {"dense", "hybrid"}
+RRF_K = 60
+
+# Hard cap on the per-query agent loop. ``metadata_stage_sequence`` today
+# returns at most ["strict", "reduced", "relaxed"] (3 stages). This constant
+# pins the contract — any future addition to the stage list that pushes
+# past 3 must update this value and explain why in the PR description.
+MAX_AGENT_ITERATIONS = 3
+
 DEFAULT_CLI_PIPELINE_NAME = "naive_baseline"
 DEFAULT_RAG_PIPELINE_NAME = "agentic_full"
 PIPELINE_CONFIG_KEYS = (
@@ -38,6 +47,7 @@ PIPELINE_CONFIG_KEYS = (
     "rerank",
     "verifier_retry",
     "retrieval_mode",
+    "retrieval_backend",
     "prompt_profile",
 )
 DEFAULT_COMPARISON_BALANCE: dict[str, Any] = {
@@ -59,6 +69,7 @@ PIPELINE_PRESETS: dict[str, dict[str, Any]] = {
         "rerank": False,
         "verifier_retry": False,
         "retrieval_mode": "flat",
+        "retrieval_backend": "dense",
         "prompt_profile": "minimal_grounded_extractive",
         "description": (
             "Fixed-size chunks with dense top-k retrieval only; no metadata-first "
@@ -71,6 +82,7 @@ PIPELINE_PRESETS: dict[str, dict[str, Any]] = {
         "rerank": True,
         "verifier_retry": True,
         "retrieval_mode": "flat",
+        "retrieval_backend": "dense",
         "prompt_profile": "structured_grounded_claims",
         "comparison_balance": dict(DEFAULT_COMPARISON_BALANCE),
         "description": "Metadata-first retrieval with lexical/metadata rerank and verifier retry.",
@@ -396,12 +408,17 @@ def resolve_pipeline_config(
     if retrieval_mode not in VALID_RETRIEVAL_MODES:
         choices = ", ".join(sorted(VALID_RETRIEVAL_MODES))
         raise ValueError(f"retrieval_mode must be one of: {choices}")
+    retrieval_backend = str(config.get("retrieval_backend") or "dense")
+    if retrieval_backend not in VALID_RETRIEVAL_BACKENDS:
+        choices = ", ".join(sorted(VALID_RETRIEVAL_BACKENDS))
+        raise ValueError(f"retrieval_backend must be one of: {choices}")
 
     config["top_k"] = top_k
     config["metadata_first"] = bool(config.get("metadata_first"))
     config["rerank"] = bool(config.get("rerank"))
     config["verifier_retry"] = bool(config.get("verifier_retry"))
     config["retrieval_mode"] = retrieval_mode
+    config["retrieval_backend"] = retrieval_backend
     config["prompt_profile"] = str(config.get("prompt_profile") or "structured_grounded_claims")
     return config
 
@@ -1737,6 +1754,7 @@ def make_plan(
     rerank: bool = True,
     verifier_retry: bool = True,
     retrieval_mode: str = "flat",
+    retrieval_backend: str = "dense",
     pipeline: str = DEFAULT_RAG_PIPELINE_NAME,
     prompt_profile: str = "structured_grounded_claims",
     comparison_balance: dict[str, Any] | None = None,
@@ -1744,6 +1762,9 @@ def make_plan(
     if retrieval_mode not in VALID_RETRIEVAL_MODES:
         choices = ", ".join(sorted(VALID_RETRIEVAL_MODES))
         raise ValueError(f"retrieval_mode must be one of: {choices}")
+    if retrieval_backend not in VALID_RETRIEVAL_BACKENDS:
+        choices = ", ".join(sorted(VALID_RETRIEVAL_BACKENDS))
+        raise ValueError(f"retrieval_backend must be one of: {choices}")
     query_type = str(analysis.get("query_type") or "single_doc")
     default_top_k = query_type_default_top_k(query_type)
     budget_reason = top_k_reason or (
@@ -1783,6 +1804,8 @@ def make_plan(
         scoring = "dense + lexical + metadata rerank"
     elif rerank:
         scoring = "dense + lexical rerank"
+    if retrieval_backend == "hybrid":
+        scoring = f"hybrid (bm25 + {scoring}) rrf"
     plan: dict[str, Any] = {
         "strategy": scoring if not metadata_first else f"metadata-first {scoring}",
         "pipeline": pipeline,
@@ -1792,6 +1815,7 @@ def make_plan(
         "rerank": rerank,
         "verifier_retry": verifier_retry,
         "retrieval_mode": retrieval_mode,
+        "retrieval_backend": retrieval_backend,
         "metadata_filters": filters,
         "top_k": top_k or default_top_k,
         "retrieval_budget": {
@@ -1844,12 +1868,21 @@ def retrieve(
     query_embedding = embed_query_for_index(query, embedding_config)
     query_tokens = set(analysis.get("tokens", []))
     query_topics = analysis.get("topics", [])
+    retrieval_backend = str(plan.get("retrieval_backend", "dense"))
+
+    bm25_score_by_chunk: dict[str, float] = {}
+    if retrieval_backend == "hybrid":
+        bm25_score_by_chunk = bm25_scores_for_index(index, list(query_tokens))
+
     scored = []
     for chunk in candidates:
         dense_score = dense_similarity(query_embedding, chunk.get("embedding"))
         lexical_score = lexical_similarity(query_tokens, query_topics, chunk)
         metadata_score = metadata_similarity(analysis, chunk)
-        if not plan.get("rerank", True):
+        bm25_score = float(bm25_score_by_chunk.get(str(chunk.get("chunk_id")), 0.0))
+        if retrieval_backend == "hybrid":
+            score = 0.0
+        elif not plan.get("rerank", True):
             score = dense_score
         elif not plan.get("metadata_first", True):
             score = (0.70 * dense_score) + (0.30 * lexical_score)
@@ -1876,6 +1909,7 @@ def retrieve(
                 "dense": round(float(dense_score), 4),
                 "lexical": round(float(lexical_score), 4),
                 "metadata": round(float(metadata_score), 4),
+                "bm25": round(float(bm25_score), 4),
             },
         }
         regions = normalize_regions(chunk.get("regions"))
@@ -1885,6 +1919,30 @@ def retrieve(
         if page_span:
             item["page_span"] = page_span
         scored.append(item)
+
+    if retrieval_backend == "hybrid" and scored:
+        by_dense = sorted(
+            scored,
+            key=lambda it: (it["score_parts"]["dense"], it["chunk_id"]),
+            reverse=True,
+        )
+        by_bm25 = sorted(
+            scored,
+            key=lambda it: (it["score_parts"]["bm25"], it["chunk_id"]),
+            reverse=True,
+        )
+        dense_rank = {it["chunk_id"]: rank for rank, it in enumerate(by_dense)}
+        bm25_rank = {it["chunk_id"]: rank for rank, it in enumerate(by_bm25)}
+        # Raw RRF tops out at 2/RRF_K (~0.033 for k=60). Normalize to
+        # [0,1] so the verifier's score floor (rag_core.py:2254,
+        # threshold 0.18 tuned for the dense+lexical fusion) keeps
+        # working for both backends without per-backend branches.
+        rrf_norm = RRF_K / 2.0
+        for item in scored:
+            cid = item["chunk_id"]
+            rrf = (1.0 / (RRF_K + dense_rank[cid])) + (1.0 / (RRF_K + bm25_rank[cid]))
+            item["score"] = round(float(rrf * rrf_norm), 6)
+            item["score_parts"]["rank_rrf"] = round(float(rrf * rrf_norm), 6)
 
     scored.sort(key=lambda item: item["score"], reverse=True)
     top_k = int(plan["top_k"])
@@ -2074,6 +2132,70 @@ def dense_similarity(query_vector: np.ndarray, chunk_vector: Any) -> float:
     return max(0.0, min(1.0, (score + 1.0) / 2.0))
 
 
+def _chunk_tokens_for_bm25(chunk: dict[str, Any]) -> list[str]:
+    tokens = chunk.get("tokens")
+    if isinstance(tokens, list) and tokens:
+        return [str(t) for t in tokens]
+    section_path = chunk.get("section_path") or [chunk.get("section", "")]
+    text = " ".join(
+        [
+            chunk.get("title", ""),
+            chunk.get("agency", ""),
+            chunk.get("project", ""),
+            " > ".join(section_path),
+            chunk.get("text", ""),
+        ]
+    )
+    return tokenize(text)
+
+
+def get_or_build_bm25(index: dict[str, Any]) -> tuple[Any, list[str]]:
+    """Lazy-build and cache a BM25Okapi index over chunk tokens.
+
+    Returns the cached `(bm25, chunk_ids)` tuple. Cached on the index
+    object under `_bm25` / `_bm25_chunk_ids` so repeated queries against
+    the same index avoid re-tokenization. Raises RuntimeError if the
+    optional `rank_bm25` dependency is missing — the caller must gate
+    on `retrieval_backend == "hybrid"`.
+    """
+    if _BM25Okapi is None:
+        raise RuntimeError(
+            "retrieval_backend='hybrid' requires the 'rank_bm25' package "
+            "(install via requirements.txt)."
+        )
+    cached = index.get("_bm25")
+    chunk_ids = index.get("_bm25_chunk_ids")
+    if cached is not None and isinstance(chunk_ids, list):
+        return cached, chunk_ids
+    chunks = index.get("chunks") or []
+    corpus = [_chunk_tokens_for_bm25(c) for c in chunks]
+    # rank_bm25 requires at least one non-empty document. If the corpus
+    # is entirely empty (degenerate test fixture) substitute a single
+    # placeholder token so BM25Okapi doesn't divide by zero.
+    if not any(corpus):
+        corpus = [["__empty__"] for _ in chunks] or [["__empty__"]]
+    bm25 = _BM25Okapi(corpus)
+    chunk_ids = [str(c.get("chunk_id")) for c in chunks]
+    index["_bm25"] = bm25
+    index["_bm25_chunk_ids"] = chunk_ids
+    return bm25, chunk_ids
+
+
+def bm25_scores_for_index(
+    index: dict[str, Any], query_tokens: list[str]
+) -> dict[str, float]:
+    """Return a `chunk_id -> bm25_score` map across all chunks in the
+    index. Callers filter to their candidate slice. Empty query tokens
+    yield an all-zero map.
+    """
+    if not query_tokens:
+        chunks = index.get("chunks") or []
+        return {str(c.get("chunk_id")): 0.0 for c in chunks}
+    bm25, chunk_ids = get_or_build_bm25(index)
+    raw = bm25.get_scores(list(query_tokens))
+    return {chunk_id: float(score) for chunk_id, score in zip(chunk_ids, raw)}
+
+
 def lexical_similarity(query_tokens: set[str], topics: list[str], chunk: dict[str, Any]) -> float:
     if not query_tokens and not topics:
         return 0.0
@@ -2236,13 +2358,47 @@ def metadata_terms_for_verification(analysis: dict[str, Any]) -> set[str]:
     return set(metadata_tokens(" ".join(values)))
 
 
+EVIDENCE_BOUNDARY = "\n[---EVIDENCE_BOUNDARY---]\n"
+
+_CHAT_TEMPLATE_TOKEN_RE = re.compile(
+    r"<\|(?:im_start|im_end|system|user|assistant|tool|begin_of_text|end_of_text|fim_[a-z_]+|endoftext)\|>",
+    re.IGNORECASE,
+)
+_ROLE_TAG_LINE_RE = re.compile(
+    r"(?im)^[ \t]*(SYSTEM|ASSISTANT|USER|TOOL)\s*:\s*.+$"
+)
+_INSTRUCTION_OVERRIDE_LINE_RE = re.compile(
+    r"(?im)^[ \t]*(?:ignore|disregard|forget|override|bypass)\b[^.\n]{0,80}?\b(?:instructions?|prompts?|rules?|directives?|system|guidance)\b.*$"
+)
+
+
+def neutralize_instruction_patterns(text: str) -> str:
+    """Neutralize chat-template and instruction-override patterns in document-controlled text.
+
+    Wraps suspicious lines with ``[INSTRUCTION_LIKE]...[/INSTRUCTION_LIKE]``
+    and replaces chat template tokens with ``[REDACTED_CHAT_TOKEN]`` so they
+    cannot impersonate role boundaries in downstream LLM consumers. Content
+    is preserved (citations remain readable) — see ADR 0008.
+    """
+    if not text:
+        return text
+    out = _CHAT_TEMPLATE_TOKEN_RE.sub("[REDACTED_CHAT_TOKEN]", text)
+    out = _ROLE_TAG_LINE_RE.sub(
+        lambda m: f"[INSTRUCTION_LIKE]{m.group(0)}[/INSTRUCTION_LIKE]", out
+    )
+    out = _INSTRUCTION_OVERRIDE_LINE_RE.sub(
+        lambda m: f"[INSTRUCTION_LIKE]{m.group(0)}[/INSTRUCTION_LIKE]", out
+    )
+    return out
+
+
 def evidence_text_for_verification(item: dict[str, Any]) -> str:
     parts = [
-        item.get("title", ""),
-        item.get("agency", ""),
-        item.get("project", ""),
-        item.get("section", ""),
-        item.get("text", ""),
+        neutralize_instruction_patterns(str(item.get("title", "") or "")),
+        neutralize_instruction_patterns(str(item.get("agency", "") or "")),
+        neutralize_instruction_patterns(str(item.get("project", "") or "")),
+        neutralize_instruction_patterns(str(item.get("section", "") or "")),
+        neutralize_instruction_patterns(str(item.get("text", "") or "")),
     ]
     metadata = item.get("metadata")
     if isinstance(metadata, dict):
@@ -2250,7 +2406,7 @@ def evidence_text_for_verification(item: dict[str, Any]) -> str:
             if value is None or value == "":
                 continue
             parts.extend(METADATA_EVIDENCE_LABELS.get(str(key), (str(key),)))
-            parts.append(str(value))
+            parts.append(neutralize_instruction_patterns(str(value)))
     return " ".join(str(part) for part in parts if str(part).strip())
 
 
@@ -2921,6 +3077,7 @@ def make_context_clarification_result(
     rerank: bool,
     verifier_retry: bool,
     retrieval_mode: str,
+    retrieval_backend: str,
     pipeline: str,
     prompt_profile: str,
     *,
@@ -2970,6 +3127,7 @@ def make_context_clarification_result(
         "rerank": rerank,
         "verifier_retry": verifier_retry,
         "retrieval_mode": retrieval_mode,
+        "retrieval_backend": retrieval_backend,
         "metadata_filters": {},
         "top_k": None,
         "retrieval_budget": {
@@ -3024,6 +3182,7 @@ def make_context_clarification_result(
             "rerank": rerank,
             "verifier_retry": verifier_retry,
             "retrieval_mode": retrieval_mode,
+            "retrieval_backend": retrieval_backend,
             "pipeline": pipeline,
             "prompt_profile": prompt_profile,
             "cold_start": cold_start,
@@ -3090,6 +3249,7 @@ def make_metadata_clarification_result(
     rerank: bool,
     verifier_retry: bool,
     retrieval_mode: str,
+    retrieval_backend: str,
     pipeline: str,
     prompt_profile: str,
     *,
@@ -3144,6 +3304,7 @@ def make_metadata_clarification_result(
         "rerank": rerank,
         "verifier_retry": verifier_retry,
         "retrieval_mode": retrieval_mode,
+        "retrieval_backend": retrieval_backend,
         "metadata_filters": {},
         "top_k": None,
         "retrieval_budget": {
@@ -3199,6 +3360,7 @@ def make_metadata_clarification_result(
             "rerank": rerank,
             "verifier_retry": verifier_retry,
             "retrieval_mode": retrieval_mode,
+            "retrieval_backend": retrieval_backend,
             "pipeline": pipeline,
             "prompt_profile": prompt_profile,
             "cold_start": cold_start,
@@ -3300,6 +3462,7 @@ def run_rag_query(
     rerank: bool | None = None,
     verifier_retry: bool | None = None,
     retrieval_mode: str | None = None,
+    retrieval_backend: str | None = None,
     pipeline: str | None = None,
     prompt_profile: str | None = None,
     conversation_state: dict[str, Any] | None = None,
@@ -3312,6 +3475,7 @@ def run_rag_query(
         ("rerank", rerank),
         ("verifier_retry", verifier_retry),
         ("retrieval_mode", retrieval_mode),
+        ("retrieval_backend", retrieval_backend),
         ("prompt_profile", prompt_profile),
     ):
         if value is not None:
@@ -3328,6 +3492,7 @@ def run_rag_query(
     rerank = bool(pipeline_config["rerank"])
     verifier_retry = bool(pipeline_config["verifier_retry"])
     retrieval_mode = str(pipeline_config["retrieval_mode"])
+    retrieval_backend = str(pipeline_config["retrieval_backend"])
     pipeline_name = str(pipeline_config["pipeline"])
     prompt_profile = str(pipeline_config["prompt_profile"])
     resolved_comparison_balance = pipeline_config.get("comparison_balance")
@@ -3362,6 +3527,7 @@ def run_rag_query(
             rerank,
             verifier_retry,
             retrieval_mode,
+            retrieval_backend,
             pipeline_name,
             prompt_profile,
             stage_timings=stage_timings,
@@ -3391,6 +3557,7 @@ def run_rag_query(
             rerank,
             verifier_retry,
             retrieval_mode,
+            retrieval_backend,
             pipeline_name,
             prompt_profile,
             stage_timings=stage_timings,
@@ -3401,6 +3568,12 @@ def run_rag_query(
         metadata_first=metadata_first,
         verifier_retry=verifier_retry,
     )
+    if len(stage_sequence) > MAX_AGENT_ITERATIONS:
+        raise RuntimeError(
+            f"stage_sequence length {len(stage_sequence)} exceeds "
+            f"MAX_AGENT_ITERATIONS={MAX_AGENT_ITERATIONS}; "
+            "update MAX_AGENT_ITERATIONS and revisit the loop contract."
+        )
     stage_attempts = []
     retry_count = 0
     plan: dict[str, Any] = {}
@@ -3427,6 +3600,7 @@ def run_rag_query(
                 rerank=rerank,
                 verifier_retry=verifier_retry,
                 retrieval_mode=retrieval_mode,
+                retrieval_backend=retrieval_backend,
                 pipeline=pipeline_name,
                 prompt_profile=prompt_profile,
                 comparison_balance=resolved_comparison_balance,
@@ -3454,6 +3628,10 @@ def run_rag_query(
             break
         if attempt_index < len(stage_sequence) - 1:
             retry_count += 1
+
+    retrieved_chunk_ids: list[str] = [
+        str(item.get("chunk_id") or "") for item in evidence if item.get("chunk_id")
+    ]
 
     if verified or analysis.get("query_type") == "comparison":
         evidence = select_supporting_evidence(analysis, evidence)
@@ -3531,6 +3709,7 @@ def run_rag_query(
             "verification_reasons": (answer.get("status_reason") or {}).get("verification_reasons") or verification_reasons,
             "verification_topics": verification_topics(analysis),
             "filter_stage_attempts": stage_attempts,
+            "retrieved_chunk_ids": retrieved_chunk_ids,
             "final_relaxation_reason": stage_attempts[-2]["verification_reasons"] if retry_count and len(stage_attempts) >= 2 else [],
             "context_resolution": context_resolution,
             "metadata_resolution": metadata_resolution,
@@ -3541,6 +3720,7 @@ def run_rag_query(
             "rerank": rerank,
             "verifier_retry": verifier_retry,
             "retrieval_mode": retrieval_mode,
+            "retrieval_backend": retrieval_backend,
             "pipeline": pipeline_name,
             "prompt_profile": prompt_profile,
             "cold_start": cold_start,

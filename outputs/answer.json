@@ -143,6 +143,7 @@
     "rerank": false,
     "verifier_retry": false,
     "retrieval_mode": "flat",
+    "retrieval_backend": "dense",
     "metadata_filters": {},
     "top_k": 4,
     "retrieval_budget": {
@@ -644,6 +645,7 @@
     "rerank": false,
     "verifier_retry": false,
     "retrieval_mode": "flat",
+    "retrieval_backend": "dense",
     "pipeline": "naive_baseline",
     "prompt_profile": "minimal_grounded_extractive",
     "cold_start": true,
