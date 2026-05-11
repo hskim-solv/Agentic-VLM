@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,10 +11,22 @@ import subprocess
 import sys
 from typing import Any
 
-import yaml
-
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from scripts._utils import (  # noqa: E402
+    append_jsonl,
+    git_dirty,
+    git_output,
+    json_hash,
+    load_yaml,
+    rel_path,
+    repo_path,
+    utc_now,
+    write_json,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,66 +36,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact_root", default=None, help="Override artifact root directory.")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing run directory.")
     return parser.parse_args()
-
-
-def repo_path(value: str | Path) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else ROOT_DIR / path
-
-
-def rel_path(path: str | Path) -> str:
-    resolved = Path(path).resolve()
-    try:
-        return str(resolved.relative_to(ROOT_DIR))
-    except ValueError:
-        return str(resolved)
-
-
-def load_yaml(path: Path) -> dict[str, Any]:
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"YAML must be a mapping: {path}")
-    return data
-
-
-def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def append_jsonl(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-def json_hash(payload: Any) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def git_output(args: list[str], default: str = "unknown") -> str:
-    try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=ROOT_DIR,
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except Exception:
-        return default
-    return result.stdout.strip() or default
-
-
-def git_dirty() -> bool:
-    status = git_output(["status", "--porcelain", "--untracked-files=no"], default="")
-    return bool(status.strip())
 
 
 def run_logged_command(command: list[str], log_path: Path) -> dict[str, Any]:
