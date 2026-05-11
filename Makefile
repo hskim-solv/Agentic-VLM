@@ -1,4 +1,4 @@
-.PHONY: setup index ask eval benchmark benchmark-check check smoke smoke-with-judge harness-smoke harness-real harness-ablation harness-compare test test-regression api api-docker demo demo-docker pareto docker-publish real-eval real-eval-delta real-eval-baseline-update real-eval-history-render real-eval-history-check real-eval-with-judge synthetic-judge leaderboard leaderboard-check clean
+.PHONY: setup index ask eval benchmark benchmark-check check check-latency smoke smoke-with-judge reproduce harness-smoke harness-real harness-ablation harness-compare test test-regression api api-docker demo demo-docker pareto docker-publish real-eval real-eval-delta real-eval-baseline-update real-eval-history-render real-eval-history-check real-eval-with-judge synthetic-judge leaderboard leaderboard-check clean
 
 PYTHON ?= python3
 VENV ?= .venv
@@ -53,8 +53,22 @@ benchmark-check:
 check:
 	$(PYTHON) scripts/update_readme_metrics.py --report reports/eval_summary.json --readme README.md --check
 
+# Absolute p95 latency SLO gate. Reads per-ablation budgets from
+# eval/config.yaml::latency_budgets and fails if any observed p95
+# exceeds its ceiling. Runs are silent if no budget is declared —
+# adding a new ablation does not force a budget for every one.
+check-latency:
+	$(PYTHON) scripts/check_latency_slo.py --config eval/config.yaml --summary reports/eval_summary.json
+
 smoke:
 	bash scripts/smoke.sh
+
+# Cross-machine reproducibility hash. Runs the smoke eval and prints a
+# SHA-256 over the environment-invariant subset of reports/eval_summary.json
+# (latency/timestamps stripped). Pass BASELINE=<sha> to compare against a
+# known-good hash from another machine; exit 2 on mismatch.
+reproduce:
+	bash scripts/reproduce_eval.sh
 
 # Run the synthetic smoke eval, then ask a RAGAS-style LLM judge for
 # enrichment metrics (ADR 0012). Opt-in additive only — never replaces

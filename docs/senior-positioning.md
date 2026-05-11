@@ -15,7 +15,7 @@
 
 | 시그널 | 어디서 확인하나 |
 |---|---|
-| 아키텍처 결정이 **사후 합리화가 아닌 기록된 결정**으로 남아있다 | [`docs/adr/`](./adr/README.md) — 14개 ADR (12 accepted / 2 proposed), status-tracked, supersession chains 명시 |
+| 아키텍처 결정이 **사후 합리화가 아닌 기록된 결정**으로 남아있다 | [`docs/adr/`](./adr/README.md) — 15개 ADR (13 accepted / 2 proposed), status-tracked, supersession chains 명시 |
 | **측정 가능한 성공 기준**을 미리 잡고 그 기준으로 평가한다 | [`portfolio-case-study.md` §2](./portfolio-case-study.md), [`eval/config.yaml`](../eval/config.yaml), README headline 표 |
 | 합성 평가의 한계를 알고 **공개/비공개 평가 분리**로 보완한다 | [ADR 0005](./adr/0005-eval-split-public-synthetic-private-local.md), [`docs/private-100-doc-experiments.md`](./private-100-doc-experiments.md) |
 | **실패를 분류·우선순위화**한 뒤 백로그로 만든다 | [`docs/real-data-failure-taxonomy.md`](./real-data-failure-taxonomy.md), 메타 이슈 #49 |
@@ -25,7 +25,7 @@
 
 ## 시니어 시그널 1 — 아키텍처 결정의 추적성
 
-각 ADR은 **하나의 의사결정**을 다룬다. 14개를 빠르게 읽고 나면, 이 시스템에서 어떤 선택이 load-bearing인지와 supersession chain이 명확해진다.
+각 ADR은 **하나의 의사결정**을 다룬다. 15개를 빠르게 읽고 나면, 이 시스템에서 어떤 선택이 load-bearing인지와 supersession chain이 명확해진다.
 
 | ADR | 상태 | 결정 | 시니어 관점에서 왜 중요한가 |
 |---|---|---|---|
@@ -43,6 +43,7 @@
 | [0012](./adr/0012-llm-judge-on-public-synthetic.md) | accepted | LLM-judge on public synthetic, stub-default (refines 0006, reuses 0011) | judge backend는 결정적 stub으로 CI 통과; real backend는 운영자 옵트인 |
 | [0013](./adr/0013-observability-as-additive-pluggable-surface.md) | accepted | observability를 additive·pluggable·fail-closed로 | trace backend(LangFuse/OTel) 장애가 query를 깨뜨리지 않음; LLM Ops 의식의 코드화 |
 | [0014](./adr/0014-ragas-judge-additive-synthetic.md) | accepted | RAGAS judge as additive enrichment (extends 0012) | 외부 표준 메트릭으로 cross-validation; 결정적 stub-default 유지 |
+| [0015](./adr/0015-cost-telemetry-additive.md) | accepted | cost telemetry as additive observability (extends 0011, 0013) | per-query `cost_estimate_usd` + `cache_read_tokens` 캡처 — LLM Ops 핵심 시그널을 계약 위반 없이 추가 |
 
 **인터뷰 talking point 1 (real-data 회귀)**: "ADR 0005가 없었다면 공개본의 abstention 회귀(#69의 `1.000 → 0.500` 사건)는 아무도 보지 못했을 것이다. 공개 합성만 보던 시기에는 1-of-2 incidental overlap 패턴이 잡히지 않았다." — 근거: [`docs/private-100-doc-experiments.md`](./private-100-doc-experiments.md) 2026-05-11 entry.
 
@@ -105,14 +106,18 @@
 리뷰어가 클론한 직후 한 명령으로 시스템을 돌려볼 수 있다.
 
 ```bash
-make smoke   # build_index → sample query → eval → README check
+make smoke      # build_index → sample query → eval → README check
+make reproduce  # smoke + SHA-256 over the environment-invariant metric subset
 ```
 
 - 외부 API/네트워크 의존 없음 (`EMBEDDING_BACKEND=hashing`)
 - 결정성 (`hashing` backend) → 같은 입력에 같은 출력
 - 산출물: `outputs/answer.json`, `reports/eval_summary.json`
+- **크로스머신 재현성 증명**: `make reproduce`가 `eval_summary.json`에서 latency·timestamp 같은 host-dependent 필드를 제거한 후 SHA-256을 계산한다. 같은 해시가 다른 머신(Linux container 등)에서 나오면 결정성 주장이 *증명 가능*한 형태로 backing된다 — `BASELINE=<hash> make reproduce`로 비교 시 mismatch는 exit 2.
 
 운영 데모는 [`docs/api-demo.md`](./api-demo.md)의 FastAPI 한 줄 startup으로 분리되어 있다 — playground이지만 measurement source는 절대 아님 ([`engineering-governance.md` table](./engineering-governance.md) 참조).
+
+**구조화 로깅**: `BIDMATE_LOG_FORMAT=json make demo`로 stdout JSON 로그를 흘려보내면 stage별 `query_start`/`query_complete` 이벤트가 `query_hash`/`latency_ms`/`status`/`retry_count`/`abstained` 필드와 함께 떨어진다. 로그 aggregation(CloudLogging/ELK/Datadog)에 그대로 꽂아 운영 관찰성을 확장 가능. 구현은 [`bidmate_logging.py`](../bidmate_logging.py).
 
 ## 인터뷰에서 받을 만한 질문과 답의 위치
 
@@ -128,6 +133,8 @@ make smoke   # build_index → sample query → eval → README check
 | "LangChain/LlamaIndex 안 쓰고 왜 자체 구축?" | [ADR 0009](./adr/0009-external-baseline-comparison.md) — 비대칭 metric(citation/abstention)을 외부 시스템이 producer 못하는 게 정량 답변 |
 | "LLM-as-judge bias는 어떻게 다루나요?" | [ADR 0012](./adr/0012-llm-judge-on-public-synthetic.md) + [ADR 0014](./adr/0014-ragas-judge-additive-synthetic.md) — stub-default + RAGAS cross-check |
 | "운영에서 latency/cost/trace는 어떻게 봅니까?" | [ADR 0013](./adr/0013-observability-as-additive-pluggable-surface.md) + [`docs/observability.md`](./observability.md) — LangFuse/OTel pluggable, fail-closed |
+| "토큰 비용은 어떻게 추적하나요? prompt caching hit rate는요?" | [ADR 0015](./adr/0015-cost-telemetry-additive.md) — `diagnostics.synthesis.cost_estimate_usd` + `cache_read_tokens` + `cache_write_tokens`; price card는 `rag_synthesis.PRICING_PER_MTOK_USD`, 회귀 가드는 `tests/test_synthesis_cost_telemetry.py` |
+| "p95 latency SLO는 어떻게 enforce하나요?" | `eval/config.yaml::latency_budgets`에 per-ablation 절대 ceiling 선언 → `make check-latency` (또는 PR workflow의 "Latency SLO check" step)이 violation 시 CI fail. 회귀 게이트(품질)와 SLO 게이트(latency)를 분리 — host variance 노이즈로 인한 거짓 fail 방지. 구현: `scripts/check_latency_slo.py`, 회귀 가드 `tests/test_check_latency_slo.py` |
 | "확장한다면 다음 우선순위는?" | [`portfolio-case-study.md` §7](./portfolio-case-study.md) + 메타 이슈 #49 |
 
 ## 이 프로젝트가 입증하지 않는 것 (정직한 범위)
