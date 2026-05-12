@@ -17,7 +17,7 @@ the dense-embedding target instead of the raw query.
 Critical contract: HyDE replaces ONLY the dense-embedding input. The
 lexical / BM25 / metadata scoring paths in ``retrieve_candidates``
 consume tokens from ``analysis`` (not the raw query string), so they
-remain invariant under expansion. See ADR 0022 for the design rationale.
+remain invariant under expansion. See ADR 0023 for the design rationale.
 
 Never-raise: ``HyDEExpander.expand`` catches every backend exception
 (SDK import, API key missing, network, parsing) and falls back to the
@@ -39,7 +39,7 @@ ENV_MAX_TOKENS = "BIDMATE_QUERY_EXPANSION_MAX_TOKENS"
 DEFAULT_BACKEND = "identity"
 # Haiku is the right cost/latency point for a 2-3 sentence rewrite. The
 # expansion is single-shot, temperature 0.0 — quality variance comes from
-# prompt design (ADR 0022), not model choice.
+# prompt design (ADR 0023), not model choice.
 DEFAULT_HYDE_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_MAX_TOKENS = 256
 

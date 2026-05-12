@@ -59,7 +59,7 @@ PIPELINE_CONFIG_KEYS = (
     # "identity" (default) preserves the ADR 0001 naive_baseline invariant;
     # "hyde" opts into Hypothetical Document Embeddings (LLM rewrite of
     # the dense-embedding target). See ``rag_query_expansion.py`` and
-    # ADR 0022.
+    # ADR 0023.
     "query_expansion",
 )
 
@@ -102,7 +102,7 @@ PIPELINE_PRESETS: dict[str, dict[str, Any]] = {
         "prompt_profile": "structured_grounded_claims",
         "rrf_k": RRF_K,
         "bm25_stopword_profile": "shared",
-        # ADR 0022 — query expansion is opt-in per-row in eval/config.yaml.
+        # ADR 0023 — query expansion is opt-in per-row in eval/config.yaml.
         # agentic_full default is identity so the existing "full" eval row
         # stays byte-equal; the new "full_hyde" row sets this to "hyde".
         "query_expansion": "identity",
@@ -164,7 +164,7 @@ def canonical_pipeline_name(value: str | None, default: str = DEFAULT_RAG_PIPELI
 VALID_RETRIEVAL_MODES = {"flat", "hierarchical"}
 VALID_RETRIEVAL_BACKENDS = {"dense", "hybrid"}
 VALID_BM25_STOPWORD_PROFILES = {"shared", "bm25_extra"}
-# Issue #396 / ADR 0022 — pluggable QueryExpander discriminator. Kept
+# Issue #396 / ADR 0023 — pluggable QueryExpander discriminator. Kept
 # narrow on purpose: a typo like "hide" raises rather than silently
 # degrading retrieval. ``rag_query_expansion.default_expander`` still
 # tolerates unknown values for runtime safety, but config-time

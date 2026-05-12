@@ -147,7 +147,7 @@ ablation_runs:
     rerank_cross_encoder: true
     verifier_retry: true
     retrieval_mode: flat
-  # Issue #396 / ADR 0022 — additive query-side rewrite (HyDE). The
+  # Issue #396 / ADR 0023 — additive query-side rewrite (HyDE). The
   # existing `full` row is the natural negative (`query_expansion`
   # defaults to identity). Under the public CI hashing-backend +
   # `BIDMATE_QUERY_EXPANSION_BACKEND` unset, ``HyDEExpander`` falls

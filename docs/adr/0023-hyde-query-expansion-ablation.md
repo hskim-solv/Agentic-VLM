@@ -1,4 +1,4 @@
-# 0022: HyDE query expansion as additive ablation
+# 0023: HyDE query expansion as additive ablation
 
 - **Status**: proposed
 - **Date**: 2026-05-12
