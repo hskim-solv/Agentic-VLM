@@ -3,7 +3,7 @@
 - **Status**: proposed
 - **Date**: 2026-05-12
 - **Deciders**: hskim-solv
-- **Related**: issues [#167](https://github.com/hskim-solv/BidMate-DocAgent/issues/167) (spike origin), [#231](https://github.com/hskim-solv/BidMate-DocAgent/issues/231) (측정), [#363](https://github.com/hskim-solv/BidMate-DocAgent/issues/363) (observability), [#365](https://github.com/hskim-solv/BidMate-DocAgent/issues/365) (this decision); ADR [0001](0001-preserve-naive-baseline.md) (baseline invariant), ADR [0011](0011-llm-synthesis-as-additive-ablation.md) (additive-LLM pattern — precedent for opt-in spikes).
+- **Related**: issues [#167](https://github.com/hskim-solv/BidMate-DocAgent/issues/167) (spike origin), [#231](https://github.com/hskim-solv/BidMate-DocAgent/issues/231) (측정), [#363](https://github.com/hskim-solv/BidMate-DocAgent/issues/363) (observability), [#365](https://github.com/hskim-solv/BidMate-DocAgent/issues/365) (this decision), [#426](https://github.com/hskim-solv/BidMate-DocAgent/issues/426) (follow-up implementation); ADR [0001](0001-preserve-naive-baseline.md) (baseline invariant), ADR [0011](0011-llm-synthesis-as-additive-ablation.md) (additive-LLM pattern — precedent for opt-in spikes).
 
 ## Context
 
