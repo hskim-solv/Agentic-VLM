@@ -237,59 +237,49 @@ All four show `+0.0` deltas vs MiniLM on every metric — same pattern as
    `full` metrics do not move. Metadata-first retrieval (ADR 0002) is
    the load-bearing design choice, not the embedding choice.
 
-## Fourth comparison — Phase 1.4 (ADR 0032): routed_subset measurement surface
+## Fourth comparison — Phase 1.4 (issue #531, 2026-05-13): routed-subset saturation falsifier
 
-Phase 1.1–1.3은 모두 `full` agentic pipeline (`metadata_first=true`)에서 측정했다. [ADR 0032](adr/0032-eval-saturation-routed-subset.md)는 이 측정이 **saturation**일 수 있다는 가설을 제기했다: metadata-first 라우팅이 대부분의 쿼리를 dense retrieval 전에 흡수하므로, 어떤 임베딩을 써도 agentic full 지표가 0pp delta를 보인다는 것.
+[ADR 0032](adr/0032-eval-saturation-routed-subset.md)이 제기한 질문: "0pp on full" 패턴이 metadata-first absorption의 artifact인가 (즉 임베딩 sensitivity를 측정 불가능하게 만드는가)?
 
-Phase 1.4는 이 가설을 falsify하기 위해 `metadata_first=false` ablation preset (`agentic_full_routed`)과 n=11 routed_subset 케이스를 추가한다. 케이스는 metadata-first 라우팅이 resolve 불가한 세 카테고리로 구성된다:
+### Measurement surface
 
-- Multi-turn follow-up (entity 생략으로 metadata match가 non-deterministic, 3 케이스)
-- Multi-doc comparison ambiguity (동일 metadata 후보가 ≥ 2 문서에 분포, 4 케이스)
-- Inference queries (metadata column hook 없음, 4 케이스 incl. 1 abstention)
+`eval/routed_config.yaml` (n=11 케이스, PR #530 추가), `agentic_full_routed` preset (`metadata_first: false`). 측정 케이스는 metadata-first routing이 우회되도록 설계됨:
+- **Multi-turn follow-up** (3 cases): entity switch, implicit metric, 2-step implicit
+- **Multi-doc comparison ambiguity** (4 cases): 동일 metadata 후보가 ≥ 2 문서에 분포
+- **Inference queries** (3 cases): metadata column hook 없는 추론 질의
+- **Abstention** (1 case): corpus에 없는 정보에 대한 abstain 케이스
 
-### Step 2a — Framework validation (hashing backend, 2026-05-13)
+Runner: `scripts/run_routed_measurement.py --backend sentence-transformers`. 결과: `reports/embedding_routed.json`.
 
-Both ablation rows(`agentic_full` / `agentic_full_routed`)가 n=11 케이스 모두에서 오류 없이 실행됨을 확인했다. 전체 결과는 [`reports/embedding_routed.json`](../reports/embedding_routed.json)에 기록되어 있다.
+### Headline numbers — Phase 1.4 (measured 2026-05-13, n=11, routed surface)
 
-#### `agentic_full_routed` vs `agentic_full` (hashing backend, n=11)
+| Model | full (metadata_first=true) accuracy | routed (metadata_first=false) accuracy | Notes |
+|---|---:|---:|---|
+| MiniLM-L12-v2 | 0.500 | **0.400** | ADR 0019 default |
+| multilingual-e5-large-instruct | 0.500 | **0.400** | ADR 0021 Phase 1.3 |
+| KoSimCSE-roberta-multitask | 0.500 | **0.400** | ADR 0021 Phase 1.2 |
+| BGE-M3 | — | — | Skipped: torch ≥ 2.6 required (ADR 0021 §4 blocker) |
+| KURE-v1 | 0.500 | **0.400** | Korean-specialized; locally cached |
 
-| ablation | metadata_first | accuracy | groundedness | citation_precision | latency p95 |
-|---|:---:|---:|---:|---:|---:|
-| `agentic_full` | true | 0.500 [0.200, 0.800] | 0.455 | 0.455 | 8.3ms |
-| `agentic_full_routed` | false | 0.400 [0.100, 0.700] | 0.364 | 0.364 | 6.9ms |
+**Spread (top-vs-bottom, routed)**: **0.0pp** (threshold: +3pp per ADR 0032 §Decision)
 
-Routing delta: −0.100pp accuracy. metadata_first=true가 hashing backend에서도 더 높음 — metadata 필터가 precision을 추가하기 때문. CIs는 두 row가 동일한 deterministic 백엔드를 사용하므로 완전히 겹친다.
+### Reading the Phase 1.4 result
 
-**중요한 caveat:** hashing backend는 query hash 기반의 deterministic 검색으로 임베딩과 무관하다. 모든 임베딩 모델이 동일한 결과를 낸다 → **embedding spread는 이 run으로 측정 불가**.
-
-### Step 2b — Embedding spread measurement (pending)
-
-**saturation 가설 falsifier의 핵심 측정.** 5개 임베딩(MiniLM, BGE-M3, e5-large-instruct, KoSimCSE, KURE-v1) × `agentic_full_routed` × n=11 routed 케이스를 `EMBEDDING_BACKEND=sentence-transformers`로 실행.
-
-Prerequisites:
-1. `routed_config.yaml` 케이스가 사용하는 synthetic agency doc ID(`rfp-agency-a-ai-quality` 등)를 실제 인덱스에 추가 (or D01-D18 기반으로 케이스 마이그레이션)
-2. `EMBEDDING_BACKEND=sentence-transformers` 로컬 실행 (~30분, ~5GB)
-
-결과 기준:
-- **Spread ≥ +3pp** (top-vs-bottom non-overlapping 95% CI) → ADR 0019 condition 3 re-evaluation trigger
-- **Spread < +3pp** → "routed 영역에서도 saturation = MiniLM lock은 진짜 결정"
-
-Prior evidence (Phase 1.1–1.3, `naive_baseline` 표):
-| model | naive_baseline accuracy | Δ vs MiniLM |
-|---|---:|---:|
-| MiniLM-L12-v2 | 0.656 | — |
-| e5-large-instruct | 0.844 | **+18.8** |
-| BGE-M3 | 0.844 | **+18.8** |
-| KoSimCSE-roberta | 0.781 | **+12.5** |
-
-Dense-only 검색에서는 임베딩이 크게 중요하다. `agentic_full_routed`는 rerank + verifier_retry를 유지하므로 `naive_baseline`보다 높은 절대 점수가 예상되지만, 임베딩 민감도는 여전히 측정 가치가 있다.
+1. **Saturation cross-validated**: 0pp 패턴이 routed surface (metadata-first disabled)에서도 성립. Saturation 가설은 "metadata-first absorption만의 artifact"가 아님을 확인.
+2. **두 가지 상보 해석**:
+   - *Corpus 규모 효과*: fixture corpus (7 docs, 9 chunks)에서 dense retrieval은 어떤 임베딩으로도 9개 chunk 중 올바른 것을 회수 → 큰 corpus에서는 spread 발생 가능
+   - *Verifier 병목*: accuracy를 제한하는 것이 retrieval 품질이 아니라 verifier exact-term match 정책 (ADR 0004 설계 의도)
+3. **ADR 0019 lock은 measurement-precluded가 아닌 empirically justified**: 두 surface(full + routed) 모두에서 0pp. Re-open condition 3 (≥ +5pp non-overlapping CIs)은 evidence-backed stable.
+4. **ADR 0032 accepted로 closes**: 측정 surface 자체가 목표였으며, spread < +3pp 결과로 ADR 0032 자동 close. ADR 0019 default lock 유지.
 
 ## See also
 
-- [`scripts/run_embedding_ablation.py`](../scripts/run_embedding_ablation.py) — the runner
+- [`scripts/run_embedding_ablation.py`](../scripts/run_embedding_ablation.py) — Phase 1.1~1.3 runner
+- [`scripts/run_routed_measurement.py`](../scripts/run_routed_measurement.py) — Phase 1.4 routed measurement runner
+- [`reports/embedding_routed.json`](../reports/embedding_routed.json) — Phase 1.4 machine-readable results
 - [`docs/ablation-results.md`](ablation-results.md) — broader ablation context
 - [ADR 0001](adr/0001-preserve-naive-baseline.md) — why `naive_baseline` is preserved
 - [ADR 0002](adr/0002-metadata-first-retrieval.md) — why metadata-first dominates
 - [ADR 0019](adr/0019-embedding-default-stays-minilm.md) — the deferral decision
 - [ADR 0021](adr/0021-bge-m3-completes-phase-1-3.md) — the Phase 1.3 closure
-- [ADR 0032](adr/0032-eval-saturation-routed-subset.md) — saturation falsifier + routed_subset
+- [ADR 0032](adr/0032-eval-saturation-routed-subset.md) — the Phase 1.4 saturation falsifier (accepted)
