@@ -47,6 +47,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 from ingestion import (
     HwpCsvTextLoader,
     HwpNativeLoader,
@@ -352,13 +354,28 @@ def _events_for_2x2_table() -> list[tuple[Any, tuple[Any, dict, dict]]]:
 
 
 class EventStreamExtractionTest(unittest.TestCase):
-    """``_extract_hwp_native_with_tables`` reads the cooked event stream."""
+    """``_extract_hwp_native_with_tables`` reads the cooked event stream.
+
+    These tests need to patch real pyhwp module attributes
+    (``hwp5.xmlmodel.Hwp5File`` / ``hwp5.binmodel.TableBody`` etc.) so the
+    SUT's lazy imports resolve to our fakes. That requires importing
+    ``hwp5`` in the test setup — which is not present in minimal CI
+    installs. We gate the class with ``pytest.importorskip`` so the
+    suite skips cleanly when pyhwp is unavailable; the rest of the file
+    (dispatch / helper / loader / wiring tests) is pyhwp-independent.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        pytest.importorskip("hwp5")
+        pytest.importorskip("hwp5.xmlmodel")
+        pytest.importorskip("hwp5.binmodel")
 
     def _patched_extract(self, sections: list[_FakeSection]):
         """Patch the pyhwp imports in ``_extract_hwp_native_with_tables`` so
         the function exercises its real logic against our fake stream
         without requiring the real wheel to be importable."""
-        import hwp5  # type: ignore[import-not-found]  # ensured by requirements.txt
+        import hwp5  # type: ignore[import-not-found]  # gated by setUpClass
         import hwp5.xmlmodel  # type: ignore[import-not-found]
         import hwp5.binmodel  # type: ignore[import-not-found]
 
