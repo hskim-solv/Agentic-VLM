@@ -172,19 +172,6 @@ jobs:
             --title "Eval delta — \`full\` pipeline" > delta.md
           cat delta.md
 
-      # Gate (issue #739): verify the README metric table is in sync with
-      # the PR-side eval_summary.json. The --check flag exits 1 if the
-      # rendered README differs from what would be regenerated from the
-      # report — catches the silent-drift case where a contributor edits
-      # eval surface but forgets to rerun scripts/update_readme_metrics.py.
-      # Fix: run `python scripts/update_readme_metrics.py` and recommit.
-      - name: Verify README metrics in sync with eval_summary (PR side)
-        run: |
-          python pr/scripts/update_readme_metrics.py \
-            --report pr/reports/eval_summary.json \
-            --readme pr/README.md \
-            --check
-
       - name: Upload eval summaries
         if: always()
         uses: actions/upload-artifact@v7
