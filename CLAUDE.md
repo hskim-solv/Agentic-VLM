@@ -81,7 +81,7 @@ Supporting:
 - **Backward compatibility.** Breaking changes need an explicit reason. Answer-contract break (ADR 0003) requires `schema_version` bump.
 - **ADR threshold.** Removing or replacing a load-bearing decision (baseline / pipeline / answer contract / eval surface) needs an ADR. Criteria: [`docs/adr/README.md`](docs/adr/README.md).
 - **Reserve ADR numbers up front.** Before drafting a new ADR, check both `ls docs/adr/` and `gh pr list --search "ADR" --state open` to find the next available number. Propose it and wait for user confirmation before creating the file — concurrent worktree work has produced repeat collisions (0022→0023, 0023→0025, 0029→0030).
-- **LLM coding bias guard.** See the `karpathy-guidelines` skill ([upstream](https://github.com/multica-ai/andrej-karpathy-skills)) for the 4-principle override (Think Before / Simplicity First / Surgical Changes / Goal-Driven) layered on top of the project-specific rules above.
+- **LLM coding bias guard.** See the `karpathy-guidelines` skill ([upstream](https://github.com/multica-ai/andrej-karpathy-skills), fetched 2026-05-15 — re-fetch with an explicit PR if upstream HEAD changes) for the 4-principle default (Think Before / Simplicity First / Surgical Changes / Goal-Driven). **Conflict policy**: the project-specific rules above (incident-derived) take precedence over the karpathy 4-principle (generic) — karpathy is a default to lean on when project rules are silent, not an override.
 
 ## PR description
 
@@ -97,7 +97,7 @@ important — the synthetic CI delta alone missed #69's intended-abstention regr
 - `bash scripts/test.sh` — `pytest -q`; same as the CI gate.
 - `make check-branch` — ad-hoc validation of the current branch against ADR 0007.
 - `make real-eval` + `make real-eval-delta` — private 100-doc eval; required when load-bearing files change.
-- `make ship-arm` — Stop-hook–driven auto-ship pipeline (commit → push → PR → CI → squash-merge). See [`docs/auto-ship.md`](docs/auto-ship.md) for gates, stages, and `STACKED=ack` discipline.
+- `make ship-arm` — Stop-hook–driven auto-ship pipeline (commit → push → PR → CI → squash-merge). See [`docs/operations/auto-ship.md`](docs/operations/auto-ship.md) for gates, stages, and `STACKED=ack` discipline.
 - Latency numbers come from `reports/eval_summary.json` `stage_latency` block — not ad-hoc measurement.
 
 ## Prohibited (not enforced by automation)

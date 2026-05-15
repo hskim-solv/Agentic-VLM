@@ -2,7 +2,7 @@
 
 - **Status**: accepted
 - **Date**: 2026-05-11
-- **Related**: [`rag_verifier.py`](../../rag_verifier.py) (`verify_evidence` + partial-topic grounding policy, extracted from `rag_core.py:L1843/L2053` in PR-J1 / issue #465), [`docs/verifier-rules.md`](../verifier-rules.md) (strict → relaxed staging expressed as pseudo-prompts; LLM-migration counter-checks), [`docs/real-data-failure-taxonomy.md`](../real-data-failure-taxonomy.md), [`docs/grounding-eval-hardening.md`](../grounding-eval-hardening.md)
+- **Related**: [`rag_verifier.py`](../../rag_verifier.py) (`verify_evidence` + partial-topic grounding policy, extracted from `rag_core.py:L1843/L2053` in PR-J1 / issue #465), [`docs/agentic/verifier-rules.md`](../agentic/verifier-rules.md) (strict → relaxed staging expressed as pseudo-prompts; LLM-migration counter-checks), [`docs/real-data/real-data-failure-taxonomy.md`](../real-data/real-data-failure-taxonomy.md), [`docs/eval/grounding-eval-hardening.md`](../eval/grounding-eval-hardening.md)
 
 ## Context
 
@@ -12,7 +12,7 @@ trusts the first retrieval pass produces confident-sounding but
 weakly-grounded answers, which is the failure mode this project most
 wants to avoid. The opposite extreme — refusing to answer whenever
 evidence is imperfect — produces excessive false abstention, which
-`docs/real-data-failure-taxonomy.md` C6 identified as the dominant
+`docs/real-data/real-data-failure-taxonomy.md` C6 identified as the dominant
 remaining failure on real corpora.
 
 There needs to be a structured way to ask *"is this evidence good
@@ -69,6 +69,33 @@ The knobs:
 - Every new failure mode tends to want its own verification reason
   string. The list in `eval/run_eval.py`'s `retry_reason_counts` is
   the source of truth for what is currently tracked.
+
+## Measurement gaps
+
+The strict / relaxed thresholds in `verify_evidence` are policy choices
+(the **Costs** section above already says this), but until issue #828
+the ADR did not expose what would justify changing them. Documented
+here so the gap is visible at the decision-record layer rather than
+buried in code:
+
+- **Magic constants under audit**:
+  `PARTIAL_TOPIC_GROUNDING_MIN_FRACTION = 0.5` and
+  `PARTIAL_TOPIC_GROUNDING_MIN_MATCHED = 2`
+  ([`rag_verifier.py:73-75`](../../rag_verifier.py)).
+- **Sweep that should be run** (tracking issue
+  [#829](https://github.com/hskim-solv/BidMate-DocAgent/issues/829)):
+  grid `MIN_FRACTION ∈ {0.3, 0.4, 0.5, 0.6, 0.7}` ×
+  `MIN_MATCHED ∈ {1, 2, 3}` = 15 cells, scored on the private-100 +
+  public-synthetic split per ADR 0005.
+- **Decision rule for a value change**: ≥3pp accuracy improvement on
+  real-100 with no >2pp abstention regression. (Numbers refined when
+  the sweep lands; until then, treat the current values as
+  spike-grade defaults defended by the regression test in
+  `tests/test_partial_topic_grounding.py` rather than as
+  optimum-derived.)
+- **Why no sweep yet**: real-eval budget is gated on the eval-set
+  expansion work (ADR 0044 / issue #732). Once that closes, #829
+  becomes the next gate.
 
 ## Alternatives considered
 

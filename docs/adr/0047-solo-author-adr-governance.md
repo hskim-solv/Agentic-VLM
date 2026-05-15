@@ -1,4 +1,4 @@
-# 0046: Solo-author ADR governance — lifecycle SLA + verification contract
+# 0047: Solo-author ADR governance — lifecycle SLA + verification contract
 
 - **Status**: accepted
 - **Date**: 2026-05-15
@@ -65,4 +65,14 @@ Reading guide:
 - `_template.md:Verification` — the template section that B3 added; new ADRs copy this.
 - `.githooks/pre-commit:lint-adr-consequences` — the hook line that enforces #3 on newly added ADR files.
 
-Running `python3 scripts/_governance.py --lint-adr-consequences docs/adr/0046-solo-author-adr-governance.md` from repo root must exit 0 — every marker above resolves to an existing key in an existing file. If a future refactor renames any of these (e.g. `next_adr_number` → `next_adr_id`), this ADR will fail its own lint and the rename PR must update both surfaces in lockstep.
+Running `python3 scripts/_governance.py --lint-adr-consequences docs/adr/0047-solo-author-adr-governance.md` from repo root must exit 0 — every marker above resolves to an existing key in an existing file. If a future refactor renames any of these (e.g. `next_adr_number` → `next_adr_id`), this ADR will fail its own lint and the rename PR must update both surfaces in lockstep.
+
+## Live race history (post-mortem note for this ADR's own creation)
+
+This ADR was authored as D1 of a 3-step audit (A2 #757 → B3 #793 → D1 #817). During the self-paced loop that shipped all three:
+
+1. PR #740 reserved ADR 0044 (`0044-realN-eval-case-expansion.md`) — caught manually before this branch's first commit; renumbered draft 0044 → 0046.
+2. After A2 merged, `--next-adr-number` returned `0044` despite the 0044 file existing on main, because the regex rejected the mixed-case `realN` slug. Captured as follow-up issue #818.
+3. After this branch pushed PR #820 with the 0046 number, PR #824 merged a different ADR 0046 (`0046-ood-evaluation-domain-selection.md`) and PR #766 merged 0045 (`0045-rag-core-leaf-migration-plan.md`). GitHub flagged the PR `CONFLICTING`. Renumbered 0046 → 0047 and rebased.
+
+Three live collisions in a 90-minute window validate the audit's premise: this single ADR ran into the failure mode the audit caught **three times** during its own authoring. The mechanical guards (A2 CLI + B3 lint + `gh pr list` cross-check) reduced the resolution cost from "silent merge collision" to "rebase + renumber + comment." Without them, ADR 0046 would have shipped twice with two different bodies, and the regex bug (#818) would still be invisible.
