@@ -121,6 +121,18 @@ def parse_args() -> argparse.Namespace:
             "auto-fallback on Node-missing)."
         ),
     )
+    parser.add_argument(
+        "--pdf_loader",
+        default=None,
+        choices=["csv_text", "kordoc"],
+        help=(
+            "PDF loader selection (ADR 0049). Sets BIDMATE_PDF_LOADER before "
+            "ingestion. 'kordoc' (default): npm subprocess that preserves "
+            "PDF table structure and headings; 'csv_text': force the cover/TOC "
+            "CSV-text fallback (offline / CI / Node-missing). Omit for the "
+            "ADR 0049 runtime default."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -168,6 +180,8 @@ def main() -> int:
         validate_args(args)
         if args.hwp_loader is not None:
             os.environ["BIDMATE_HWP_LOADER"] = args.hwp_loader
+        if args.pdf_loader is not None:
+            os.environ["BIDMATE_PDF_LOADER"] = args.pdf_loader
         output_dir = Path(args.output_dir)
         visual_artifact_dir = (
             Path(args.visual_artifact_dir)

@@ -142,21 +142,26 @@ def _build_mixed_corpus(root: Path) -> tuple[Path, Path, list[dict[str, str]]]:
 
 class MixedFormatIngestionTest(unittest.TestCase):
     def setUp(self) -> None:
-        # ADR 0049: kordoc is now the default HWP backend, but this suite
-        # uses dummy 0-byte fixtures that kordoc can't parse. Force the
-        # CSV-text loader so the suite stays an offline-friendly fixture
-        # of the v1 path (the kordoc subprocess + fallback path is covered
-        # by tests/test_ingestion_kordoc_regression.py).
+        # ADR 0049: kordoc is now the default HWP + PDF backend, but this
+        # suite uses dummy 0-byte fixtures that kordoc can't parse. Force
+        # the CSV-text loader for both formats so the suite stays an
+        # offline-friendly fixture of the v1 path (the kordoc subprocess +
+        # fallback path is covered by tests/test_ingestion_kordoc_regression.py).
         import os
-        self._env_backup = os.environ.get("BIDMATE_HWP_LOADER")
+        self._env_backup = {
+            "BIDMATE_HWP_LOADER": os.environ.get("BIDMATE_HWP_LOADER"),
+            "BIDMATE_PDF_LOADER": os.environ.get("BIDMATE_PDF_LOADER"),
+        }
         os.environ["BIDMATE_HWP_LOADER"] = "csv_text"
+        os.environ["BIDMATE_PDF_LOADER"] = "csv_text"
 
     def tearDown(self) -> None:
         import os
-        if self._env_backup is None:
-            os.environ.pop("BIDMATE_HWP_LOADER", None)
-        else:
-            os.environ["BIDMATE_HWP_LOADER"] = self._env_backup
+        for key, value in self._env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def test_default_fail_policy_indexes_three_and_reports_three_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

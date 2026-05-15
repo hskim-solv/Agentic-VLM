@@ -3,7 +3,7 @@
 - **Status**: proposed
 - **Date**: 2026-05-15
 - **Deciders**: hskim
-- **Related**: [ADR 0001](./0001-preserve-naive-baseline.md) (csv_text baseline preserved), [ADR 0036](./0036-hwp-native-loader-pyhwp-gated-default.md) (superseded by this), issue [#890](https://github.com/hskim-solv/BidMate-DocAgent/issues/890) (this ADR), issue [#801](https://github.com/hskim-solv/BidMate-DocAgent/issues/801) (`hwp_native_rate > 0.0` goal — superseded surface), PR [#856](https://github.com/hskim-solv/BidMate-DocAgent/pull/856) (closed: pyhwp 0.1b15 sections API adapt — superseded by this)
+- **Related**: [ADR 0001](./0001-preserve-naive-baseline.md) (csv_text baseline preserved), [ADR 0036](./0036-hwp-native-loader-pyhwp-gated-default.md) (superseded by this), issue [#890](https://github.com/hskim-solv/BidMate-DocAgent/issues/890) (this ADR), issue [#801](https://github.com/hskim-solv/BidMate-DocAgent/issues/801) (`hwp_native_rate > 0.0` goal — superseded surface), PR [#856](https://github.com/hskim-solv/BidMate-DocAgent/pull/856) (closed: pyhwp 0.1b15 sections API adapt — superseded by this), PR [#895](https://github.com/hskim-solv/BidMate-DocAgent/pull/895) (this PR — extended to PDF mid-review after the kordoc-vs-csv_text PDF measurement showed 22×–757× content-size gap)
 
 ## Context
 
@@ -15,10 +15,13 @@ A 2026-05-15 Phase 1 dump experiment ran [chrisryugj/kordoc](https://github.com/
 
 ## Decision
 
-Replace `ingestion.HwpNativeLoader`'s pyhwp/hwp5 backend with `HwpKordocLoader`, which shells out to `npx -y -p kordoc -p pdfjs-dist kordoc <files…> -d <out>/`. Keep `csv_text` as the unconditional fallback path to preserve ADR 0001 naive baseline. PDF parsing keeps the existing `PdfCsvTextLoader` in this PR; the same kordoc subprocess can extend to PDF in a follow-up — the loader factory in `_resolve_loader` is the seam (pdfjs-dist peer dependency already included so the surface is ready, and the Phase 1 dump experiment confirmed kordoc converts the 4 PDFs correctly).
+Replace `ingestion.HwpNativeLoader`'s pyhwp/hwp5 backend with `HwpKordocLoader`, and replace `PdfCsvTextLoader`'s default path with `PdfKordocLoader`. Both shell out to a *single* `npx -y -p kordoc -p pdfjs-dist kordoc <files…> -d <out>/` invocation per ingestion run (orchestrated by `_prime_kordoc_batches`), then route the resulting Markdown into per-format loader caches by file extension. Keep `csv_text` as the unconditional fallback for both formats to preserve ADR 0001 naive baseline.
 
-- **env switch**: `BIDMATE_HWP_LOADER=kordoc` (default) | `csv_text` (offline / CI / Node-missing). `kordoc` auto-degrades to `csv_text` on `node --version` failure or `npx` exit-code error, mirroring ADR 0036's fallback discipline.
-- **Telemetry surface (preserved)**: `HwpKordocLoader.last_text_source ∈ {"kordoc", "data_list_csv_text"}` and `last_fallback_reason` keep the same shape as ADR 0036's loader so existing eval reporting (`reports/eval_summary.json::text_source_counts`) keeps working with a key rename only.
+PDF was originally scoped out of the first iteration of this ADR but pulled back in after a mid-review measurement: csv_text PDF extraction held only 220–2,716 chars per document (cover + TOC only), while kordoc held 60,572–268,877 chars with 24–198 `<table>` blocks each — a 22×–757× content-size gap on the 4-PDF private slice, larger than the HWP `hwp_native_rate=0.0` silent-failure gap that originally motivated this ADR.
+
+- **env switches**: `BIDMATE_HWP_LOADER=kordoc` (default) | `csv_text`; `BIDMATE_PDF_LOADER=kordoc` (default) | `csv_text`. Each format flips independently. Both auto-degrade to `csv_text` on `node --version` failure or `npx` exit-code error, mirroring ADR 0036's fallback discipline.
+- **Telemetry surface**: `{Hwp,Pdf}KordocLoader.last_text_source ∈ {"kordoc", "data_list_csv_text"}` and `last_fallback_reason` keep the shape ADR 0036's loader established, so `reports/eval_summary.json::text_source_counts` reads `{"hwp": {"kordoc": N}, "pdf": {"kordoc": M}}` after this PR. The eval `kordoc_rate` aggregation that originally targeted HWP applies to both formats now.
+- **Single-subprocess batching**: `_prime_kordoc_batches` pools HWP + PDF paths into one `npx kordoc` call so the npm fetch + Node spin-up cost is paid once per ingestion, not twice. Per-format cache routing happens after the subprocess returns.
 - **pyhwp/hwp5 removal**: pyhwp is *not* pinned in any `requirements*.txt` — `ingestion.py` only imports it lazily under a `find_spec("hwp5")` gate. This PR removes the lazy imports and gate; no requirements diff is needed. If pyhwp lives in a dev shell elsewhere it is now dead weight, removable in a future cleanup at zero risk.
 
 ## Consequences
@@ -42,6 +45,7 @@ Replace `ingestion.HwpNativeLoader`'s pyhwp/hwp5 backend with `HwpKordocLoader`,
 The Decision binds four measurement surfaces. The pre-commit lint resolves the keys below to existing files once the kordoc PR lands (the new files are created by the kordoc PR itself):
 
 <!-- verifies-key: ingestion.py:HwpKordocLoader -->
+<!-- verifies-key: ingestion.py:PdfKordocLoader -->
 <!-- verifies-key: tests/test_ingestion_kordoc_regression.py:test_ -->
 <!-- verifies-key: reports/eval_summary.json:text_source_counts -->
 <!-- verifies-key: docs/adr/0036-hwp-native-loader-pyhwp-gated-default.md:superseded -->

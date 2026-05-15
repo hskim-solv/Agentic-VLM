@@ -143,34 +143,35 @@ class HwpCsvTextLoader(CsvTextDocumentLoader):
     file_format = "hwp"
 
 
-class HwpKordocLoader(CsvTextDocumentLoader):
-    """HWP loader that shells out to kordoc (npm) to produce Markdown.
+class _KordocLoader(CsvTextDocumentLoader):
+    """Base loader that shells out to kordoc (npm) to produce Markdown.
 
-    Replaces ``HwpNativeLoader`` (ADR 0036, pyhwp/hwp5 backend) — see
-    ADR 0049 for rationale. kordoc preserves table structure, headings,
-    and form-document layout that paragraph-only pyhwp extraction loses.
+    Replaces the legacy pyhwp/hwp5 backend (ADR 0036) and the
+    cover/TOC-only ``PdfCsvTextLoader`` path — see ADR 0049 for
+    rationale. kordoc preserves table structure (``<table>`` with
+    ``rowspan``/``colspan``), headings, and form-document layout that
+    paragraph-only pyhwp extraction and CSV-text PDF extraction discard.
 
     On any subprocess failure (Node missing, npx error, empty output)
     falls back to the CSV ``텍스트`` column so ADR 0001's naive baseline
     invariant holds offline. The fallback path is identical to the
-    pre-ADR-0036 contract — `csv_text` is now load-bearing for offline
+    pre-kordoc contract — `csv_text` is now load-bearing for offline
     correctness, not just for ADR 0001 comparison.
 
     Diagnostics: ``last_text_source`` records ``"kordoc"`` or
     ``"data_list_csv_text"``; ``last_fallback_reason`` records
     ``"ExceptionName: truncated message"`` when fallback fires
-    (``None`` otherwise). Same shape as ADR 0036's loader so
-    ``reports/eval_summary.json::text_source_counts`` keeps working
-    with a key rename only.
+    (``None`` otherwise). ``reports/eval_summary.json::text_source_counts``
+    keeps working with a key rename only (``hwp_native`` → ``kordoc``).
 
     Batch optimization: callers (``load_documents_from_metadata_csv``)
-    can call ``prime_batch(source_paths)`` once to invoke kordoc on the
-    full file list in one subprocess and cache the resulting Markdown.
-    Per-row ``load_text`` then reads from cache, avoiding 96 separate
-    ``npx`` invocations.
+    call ``prime_batch(source_paths)`` once to invoke kordoc on the full
+    file list in one subprocess and cache the resulting Markdown. Per-row
+    ``load_text`` then reads from cache, avoiding N separate ``npx``
+    invocations. Subclasses set ``file_format`` to ``"hwp"`` / ``"pdf"``.
     """
 
-    file_format = "hwp"
+    file_format = ""
 
     def __init__(self) -> None:
         self.last_text_source = "data_list_csv_text"
@@ -193,7 +194,7 @@ class HwpKordocLoader(CsvTextDocumentLoader):
         except _KordocFallback as exc:
             self.last_fallback_reason = f"{type(exc.__cause__).__name__ if exc.__cause__ else 'KordocError'}: {str(exc)[:120]}"
             warnings.warn(
-                f"HwpKordocLoader batch fallback to CSV text: {self.last_fallback_reason}",
+                f"{type(self).__name__} batch fallback to CSV text: {self.last_fallback_reason}",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -213,6 +214,14 @@ class HwpKordocLoader(CsvTextDocumentLoader):
         if not text:
             raise ValueError("empty_text")
         return text
+
+
+class HwpKordocLoader(_KordocLoader):
+    file_format = "hwp"
+
+
+class PdfKordocLoader(_KordocLoader):
+    file_format = "pdf"
 
 
 class _KordocFallback(RuntimeError):
@@ -348,41 +357,46 @@ LOADERS: dict[str, CsvTextDocumentLoader] = {
 
 
 _HWP_KORDOC_LOADER: HwpKordocLoader | None = None
+_PDF_KORDOC_LOADER: PdfKordocLoader | None = None
 
 
-def _reset_hwp_kordoc_loader() -> None:
-    """Drop the module-level ``HwpKordocLoader`` singleton.
+def _reset_kordoc_loaders() -> None:
+    """Drop the module-level kordoc loader singletons (HWP + PDF).
 
     Called at the start of ``load_documents_from_metadata_csv`` so each
     ingestion run gets a fresh batch cache and resets
     ``last_text_source`` / ``last_fallback_reason``. Tests use this to
     isolate runs.
     """
-    global _HWP_KORDOC_LOADER
+    global _HWP_KORDOC_LOADER, _PDF_KORDOC_LOADER
     _HWP_KORDOC_LOADER = None
+    _PDF_KORDOC_LOADER = None
+
+
+_reset_hwp_kordoc_loader = _reset_kordoc_loaders
 
 
 def _resolve_loader(file_format: str) -> CsvTextDocumentLoader:
     """Pick the loader for ``file_format``.
 
-    For HWP, env-var precedence (ADR 0049, highest to lowest):
+    For HWP and PDF, env-var precedence (ADR 0049, highest to lowest):
 
-    * ``BIDMATE_HWP_LOADER=csv_text`` — explicit opt-out; always use CSV loader.
-    * *(unset)* or ``BIDMATE_HWP_LOADER=kordoc`` — default to ``HwpKordocLoader``.
+    * ``BIDMATE_HWP_LOADER=csv_text`` / ``BIDMATE_PDF_LOADER=csv_text`` —
+      explicit opt-out; use the CSV-text loader for that format.
+    * *(unset)* or ``=kordoc`` — default to the kordoc-backed loader.
       Auto-degrades to CSV at runtime when ``node`` / ``npx`` is missing or
       the subprocess fails (telemetry-visible via ``last_fallback_reason``).
 
-    Legacy values ``csv`` / ``native`` / ``native_tables`` from ADR 0036
-    are aliased to ``csv_text`` (CSV fallback) with a one-shot
-    ``DeprecationWarning`` so existing deploy scripts keep working
-    without immediate breakage.
+    Legacy HWP values ``csv`` / ``native`` / ``native_tables`` from ADR 0036
+    are aliased to ``csv_text`` (CSV fallback); the two deprecated names
+    fire a one-shot ``DeprecationWarning`` so existing deploy scripts keep
+    working without immediate breakage.
 
-    The ``HwpKordocLoader`` instance is cached at module level so a
-    single ``prime_batch`` (called once from
-    ``load_documents_from_metadata_csv``) populates the cache the
-    per-row ``_resolve_loader`` calls then read from.
+    Each kordoc loader instance is cached at module level so a single
+    ``prime_batch`` (called once from ``load_documents_from_metadata_csv``)
+    populates the cache the per-row ``_resolve_loader`` calls then read from.
     """
-    global _HWP_KORDOC_LOADER
+    global _HWP_KORDOC_LOADER, _PDF_KORDOC_LOADER
     if file_format == "hwp":
         opt_in = os.environ.get("BIDMATE_HWP_LOADER", "").strip().lower()
         if opt_in in {"native", "native_tables"}:
@@ -398,37 +412,81 @@ def _resolve_loader(file_format: str) -> CsvTextDocumentLoader:
         if _HWP_KORDOC_LOADER is None:
             _HWP_KORDOC_LOADER = HwpKordocLoader()
         return _HWP_KORDOC_LOADER
+    if file_format == "pdf":
+        opt_in = os.environ.get("BIDMATE_PDF_LOADER", "").strip().lower()
+        if opt_in in {"csv", "csv_text"}:
+            return LOADERS[file_format]
+        if _PDF_KORDOC_LOADER is None:
+            _PDF_KORDOC_LOADER = PdfKordocLoader()
+        return _PDF_KORDOC_LOADER
     return LOADERS[file_format]
 
 
-def _prime_hwp_kordoc_batch(
+def _prime_kordoc_batches(
     rows: list[dict[str, str]], files_dir: Path
 ) -> None:
-    """Pre-convert every existing HWP source in one kordoc subprocess.
+    """Pre-convert every HWP + PDF source in one kordoc subprocess.
 
-    No-op when the resolved HWP loader is not ``HwpKordocLoader``
-    (e.g. ``BIDMATE_HWP_LOADER=csv_text``) or when no row resolves to a
-    readable HWP file. Per-row ``_resolve_loader`` calls then read the
-    primed cache; misses (Node-down / subprocess error / NFC mismatch)
-    fall through to ``data_list_csv_text`` as documented on
-    ``HwpKordocLoader.load_text``.
+    Combines both formats into a single ``npx kordoc`` invocation so the
+    npm fetch + spin-up cost is paid once per ingestion run. Routes the
+    resulting Markdown into each loader's cache by file extension.
+
+    No-op for any format whose resolver returns the CSV-text loader
+    (env opt-out) or whose row list is empty. Per-row ``_resolve_loader``
+    calls then read the primed cache; misses (Node-down / subprocess
+    error / NFC mismatch) fall through to ``data_list_csv_text``.
     """
-    loader = _resolve_loader("hwp")
-    if not isinstance(loader, HwpKordocLoader):
-        return
-    hwp_paths: list[Path] = []
+    paths_by_format: dict[str, list[Path]] = {"hwp": [], "pdf": []}
     for row in rows:
         file_name = clean_cell(row.get("파일명"))
         if not file_name:
             continue
         file_format = normalize_file_format(row.get("파일형식"), file_name)
-        if file_format != "hwp":
+        if file_format not in paths_by_format:
             continue
         source_path = find_source_file(files_dir, file_name)
         if source_path.exists() and source_path.is_file():
-            hwp_paths.append(source_path)
-    if hwp_paths:
-        loader.prime_batch(hwp_paths)
+            paths_by_format[file_format].append(source_path)
+
+    loaders: dict[str, _KordocLoader] = {}
+    for fmt, paths in paths_by_format.items():
+        if not paths:
+            continue
+        loader = _resolve_loader(fmt)
+        if isinstance(loader, _KordocLoader):
+            loaders[fmt] = loader
+
+    if not loaders:
+        return
+
+    combined: list[Path] = []
+    for fmt in loaders:
+        combined.extend(paths_by_format[fmt])
+
+    try:
+        markdown_by_stem = _kordoc_convert_batch(combined)
+    except _KordocFallback as exc:
+        reason = (
+            f"{type(exc.__cause__).__name__ if exc.__cause__ else 'KordocError'}: "
+            f"{str(exc)[:120]}"
+        )
+        for loader in loaders.values():
+            loader.last_fallback_reason = reason
+            warnings.warn(
+                f"{type(loader).__name__} batch fallback to CSV text: {reason}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return
+
+    for fmt, loader in loaders.items():
+        for path in paths_by_format[fmt]:
+            text = markdown_by_stem.get(_kordoc_output_stem(path))
+            if text:
+                loader._batch_cache[str(path)] = text
+
+
+_prime_hwp_kordoc_batch = _prime_kordoc_batches
 
 
 def load_documents_from_metadata_csv(
@@ -455,14 +513,14 @@ def load_documents_from_metadata_csv(
     records: list[IngestionRecord] = []
     tracker = _DuplicateTracker()
 
-    _reset_hwp_kordoc_loader()
+    _reset_kordoc_loaders()
 
     with metadata_csv.open("r", encoding="utf-8-sig", newline="") as file:
         reader = csv.DictReader(file)
         validate_fieldnames(reader.fieldnames or [], metadata_csv)
         rows = list(reader)
 
-    _prime_hwp_kordoc_batch(rows, files_dir)
+    _prime_kordoc_batches(rows, files_dir)
 
     for row_number, row in enumerate(rows, start=2):
         document, record = normalize_ingestion_row(
