@@ -54,10 +54,12 @@ setup:
 	$(ACTIVATE) && pip install -r requirements.txt
 
 # One-time per clone: activate the opt-in git hooks in .githooks/
-# (pre-commit ADR 0005 boundary, pre-push branch/eval checks).
+# (pre-commit ADR 0005 boundary, pre-push branch/eval checks, commit-msg
+# branch-issue link check from issue #826).
 install-hooks:
 	git config core.hooksPath .githooks
-	@echo "Activated .githooks/ for this clone. See docs/engineering-governance.md §Hook setup."
+	@echo "Activated .githooks/ for this clone (pre-commit + pre-push + commit-msg)."
+	@echo "See docs/engineering-governance.md §Hook setup."
 
 # Ad-hoc validation of the current branch against ADR 0007.
 # Useful before opening a PR; mirrors the CI check.

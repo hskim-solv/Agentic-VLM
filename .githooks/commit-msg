@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Commit-msg hook for BidMate-DocAgent (issue #826).
+#
+# Activate per-developer with:
+#   git config core.hooksPath .githooks
+# or `make install-hooks` (idempotent).
+#
+# Behavior: when the current branch matches the ADR 0007 convention
+# `<type>/issue-<N>[-<slug>]`, require the commit message to reference
+# the same issue number anywhere (e.g. `(closes #N)`, `#N`, `Closes #N`).
+# This complements the CI gate that only checks PR body — commit-level
+# linkage was unmeasured (44% miss in the last 50 main commits).
+#
+# Exit codes:
+#   0  ok / not applicable / bot branch
+#   1  block: missing issue reference in commit message
+#
+# Bypass with `git commit --no-verify` only when the omission is intentional
+# (e.g. cherry-pick / revert where the original ref already documents it).
+
+set -u
+
+msg_file="$1"
+if [[ -z "${msg_file:-}" || ! -f "$msg_file" ]]; then
+  # No path or unreadable — fail-open. Real commits always provide one.
+  exit 0
+fi
+
+# Skip merge / fixup / squash commits — they don't get user-edited bodies
+# in the normal path and re-using their parent's link is fine.
+if [[ -f "$(dirname "$msg_file")/MERGE_MSG" ]]; then
+  exit 0
+fi
+first_line=$(head -n1 "$msg_file" 2>/dev/null || true)
+if [[ "$first_line" =~ ^(Merge\ branch|Merge\ pull|Revert\ |fixup\!|squash\!|amend\!) ]]; then
+  exit 0
+fi
+
+# `symbolic-ref --short HEAD` works on unborn branches too (initial commit),
+# unlike `rev-parse --abbrev-ref` which returns the literal "HEAD" there.
+branch=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+if [[ -z "$branch" ]]; then
+  exit 0  # detached HEAD — nothing to enforce
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# Reuse the single-source regex from scripts/check_branch_and_issue.py.
+issue_n=$(BRANCH="$branch" python3 - <<'PY' 2>/dev/null || true
+import os, sys, pathlib
+sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
+try:
+    from check_branch_and_issue import parse_branch
+except Exception:
+    sys.exit(0)
+b = os.environ.get("BRANCH", "")
+try:
+    n = parse_branch(b)
+except ValueError:
+    sys.exit(0)
+if n is not None:
+    print(n)
+PY
+)
+
+if [[ -z "$issue_n" ]]; then
+  # Branch is exempt (bot/revert), unparseable, or has no issue number.
+  # ADR 0007 pre-push gate already enforces branch naming separately.
+  exit 0
+fi
+
+# Strip comment lines (git's default scissor-comment is "#") before
+# searching, so `# On branch ...` boilerplate doesn't satisfy the match.
+body=$(grep -v '^#' "$msg_file" 2>/dev/null || cat "$msg_file")
+
+# Match any of: `#<N>`, `closes/fixes/resolves #<N>` (case-insensitive,
+# word-boundary).
+if printf '%s' "$body" | grep -qiE "(^|[^[:alnum:]_])#${issue_n}([^[:digit:]]|$)"; then
+  exit 0
+fi
+
+# Telemetry: record the block (axis #3 automation ROI signal).
+{
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf '%s|blocked|commit-msg-no-issue|%s\n' "$ts" "$branch"
+} >> "$REPO_ROOT/.claude/.hook-fires.log" 2>/dev/null || true
+
+cat >&2 <<EOF
+
+❌ commit-msg hook blocked: branch references issue #${issue_n} but the
+   commit message has no \`#${issue_n}\` reference.
+
+   Branch: $branch
+   Convention (ADR 0007): commit message should link the issue too so
+   that GitHub auto-closes on squash-merge and \`git log\` is greppable.
+
+   Fix: re-run \`git commit\` and append a line such as
+
+       Closes #${issue_n}
+
+   or include \`(closes #${issue_n})\` in the subject. To bypass for an
+   intentional omission (cherry-pick / revert), use \`--no-verify\`.
+
+EOF
+exit 1

@@ -2,11 +2,14 @@
 # Claude Code PreToolUse hook for BidMate-DocAgent — Bash matcher.
 #
 # Registered in `.claude/settings.json` with matcher `Bash`. Fires before
-# Claude runs any Bash command. Refuses `gh pr merge --delete-branch`
-# when the target branch has open stacked dependents (i.e. open PRs
-# whose `base` is this branch). Auto-enforces the policy stated in
-# CLAUDE.md `## Prohibited` after the PR #423 → #431 and PR #470
-# stacked-PR auto-close incidents.
+# Claude runs any Bash command. Two guards in this single dispatcher:
+#
+#   1. `gh pr merge --delete-branch` with open stacked dependents
+#      (auto-enforces CLAUDE.md `## Prohibited` after PR #423 → #431 and
+#      PR #470 stacked-PR auto-close incidents).
+#   2. `gh pr create` without `--base` when the current branch's fork
+#      point is a non-main feature branch (issue #826 — caught after
+#      repeated PR-A0/A1/A2/A3 manual base re-edits).
 #
 # Behavior:
 #   - exit 0  : safe / not applicable / fail-open
@@ -33,11 +36,15 @@ try:
 except Exception:
     pass' 2>/dev/null)
 
-# Fast path: not a destructive gh merge.
+# Fast path: empty command.
 if [[ -z "$cmd" ]]; then
   exit 0
 fi
-is_merge_cmd=$(printf '%s' "$cmd" | python3 -c '
+
+# Identify which gh pr subcommand (if any) the command runs. Honors
+# command chaining (`;`, `&&`, `||`, `|`, `&`, newline) and parses each
+# segment with shlex so quoted args don't fool us.
+gh_subcmd=$(printf '%s' "$cmd" | python3 -c '
 import sys, shlex, re
 for part in re.split(r"[;&|\n]", sys.stdin.read()):
     part = part.strip().lstrip("(")
@@ -45,15 +52,91 @@ for part in re.split(r"[;&|\n]", sys.stdin.read()):
         tokens = shlex.split(part)
     except ValueError:
         continue
-    if len(tokens) >= 3 and tokens[0] == "gh" and tokens[1] == "pr" and tokens[2] == "merge":
-        print("yes"); break
+    if len(tokens) >= 3 and tokens[0] == "gh" and tokens[1] == "pr" and tokens[2] in ("merge", "create"):
+        print(tokens[2]); break
 ' 2>/dev/null)
-if [[ "$is_merge_cmd" != "yes" ]]; then
-  exit 0
-fi
-if ! grep -qE -- '--delete-branch' <<<"$cmd"; then
-  exit 0
-fi
+
+case "$gh_subcmd" in
+  merge)
+    if ! grep -qE -- '--delete-branch' <<<"$cmd"; then
+      exit 0
+    fi
+    ;;
+  create)
+    # `gh pr create` guard. Skip if user already specified `--base <X>`
+    # (any of: `--base main`, `--base=main`, `-B main`).
+    if grep -qE -- '(--base([= ])|[^[:alnum:]_-]-B[ ])' <<<"$cmd"; then
+      exit 0
+    fi
+
+    head_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    if [[ -z "$head_branch" || "$head_branch" == "HEAD" ]]; then
+      exit 0  # detached HEAD — fail-open
+    fi
+
+    # Resolve main reference (origin/main preferred, fall back to main).
+    main_ref="origin/main"
+    if ! git rev-parse --verify --quiet "$main_ref" >/dev/null 2>&1; then
+      main_ref="main"
+      if ! git rev-parse --verify --quiet "$main_ref" >/dev/null 2>&1; then
+        exit 0  # no main ref — fail-open
+      fi
+    fi
+
+    # Find feature branches (excluding main, HEAD, current) that contain
+    # HEAD's parent — i.e. branches HEAD was forked from. If any such
+    # branch is a closer ancestor than main, this is a stacked PR.
+    # Heuristic: a non-main local/remote branch that is an ancestor of
+    # HEAD AND not an ancestor of main.
+    candidates=$(git for-each-ref --format='%(refname:short)' \
+                    refs/heads refs/remotes/origin 2>/dev/null \
+                  | grep -vE '^(origin/HEAD|origin/main|main)$' \
+                  | grep -v "^${head_branch}$" \
+                  | grep -v "^origin/${head_branch}$" \
+                  || true)
+
+    stacked_parent=""
+    while IFS= read -r ref; do
+      [[ -z "$ref" ]] && continue
+      # ref must be ancestor of HEAD AND not ancestor of main_ref AND
+      # not equal to HEAD.
+      if git merge-base --is-ancestor "$ref" HEAD 2>/dev/null \
+         && ! git merge-base --is-ancestor "$ref" "$main_ref" 2>/dev/null \
+         && [[ "$(git rev-parse "$ref" 2>/dev/null)" != "$(git rev-parse HEAD 2>/dev/null)" ]]; then
+        stacked_parent="$ref"
+        break
+      fi
+    done <<< "$candidates"
+
+    if [[ -z "$stacked_parent" ]]; then
+      exit 0  # fork point is main — `gh pr create` defaults are correct
+    fi
+
+    {
+      ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      printf '%s|blocked|gh-pr-create-missing-base|%s\n' "$ts" "$head_branch"
+    } >> "$REPO_ROOT/.claude/.hook-fires.log" 2>/dev/null || true
+
+    cat >&2 <<EOF
+⛔ Refusing \`gh pr create\` without \`--base\`: \`$head_branch\` looks
+   stacked on \`$stacked_parent\` (which is not main).
+
+   Without an explicit \`--base\`, gh would target main and the diff
+   would include $stacked_parent's commits too — confusing reviewers
+   and inflating CI cost. Re-issue with one of:
+
+       gh pr create --base $stacked_parent  ...   # keep the stack
+       gh pr create --base main             ...   # collapse to main
+
+   To override (e.g. \`$stacked_parent\` was just rebased onto main and
+   the heuristic is wrong), pass \`--base main\` explicitly.
+EOF
+    exit 2
+    ;;
+  *)
+    exit 0
+    ;;
+esac
 
 # Resolve the head branch whose PR is being merged.
 #   `gh pr merge <N>` → look up PR N's head branch
