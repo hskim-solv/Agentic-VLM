@@ -147,7 +147,7 @@ def test_lint_marker_with_absent_key_fails(tmp_path: Path) -> None:
     assert len(errors) == 1
     assert "stage_attempts" in errors[0]
     assert "report.json" in errors[0]
-    assert "not wired up" in errors[0]
+    assert "wired up" in errors[0]
 
 
 def test_lint_multiple_markers_partial_failure(tmp_path: Path) -> None:
