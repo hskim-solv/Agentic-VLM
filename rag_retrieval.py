@@ -125,7 +125,18 @@ def apply_fusion_and_reranking(
         from rag_reranker import default_reranker
 
         top_n = min(30, max(int(plan["top_k"] or 10) * 3, int(plan["top_k"] or 10)))
+        # Capture pre-rerank top-10 chunk_ids before the reranker reorders them.
+        # The eval scorer uses these together with the post-rerank top-10 (set
+        # below) and gold_chunk_ids to compute `rerank_delta_mrr` and
+        # `rerank_delta_ndcg_at_10` — the isolated cross-encoder contribution
+        # on top of the 60/25/15 dense+lexical+metadata blend (issue #767).
+        pre_rerank_top10 = [str(item.get("chunk_id") or "") for item in scored[:10]]
         scored, rerank_meta = default_reranker().rerank(query, scored, top_n=top_n)
+        rerank_meta = dict(rerank_meta)
+        rerank_meta["pre_rerank_top10"] = pre_rerank_top10
+        rerank_meta["post_rerank_top10"] = [
+            str(item.get("chunk_id") or "") for item in scored[:10]
+        ]
         plan["rerank_cross_encoder_meta"] = rerank_meta
     top_k = int(plan["top_k"])
     if plan.get("retrieval_mode") == "hierarchical":
@@ -517,10 +528,27 @@ def embed_query_for_index(query: str, embedding_config: dict[str, Any]) -> np.nd
 
 def dense_similarity(query_vector: np.ndarray, chunk_vector: Any) -> float:
     if chunk_vector is None:
+        # Legitimate "no embedding for this chunk" case (e.g. metadata-only
+        # rows in test fixtures). Returning 0.0 is the documented contract.
         return 0.0
     doc_vector = np.asarray(chunk_vector, dtype=np.float32)
     if doc_vector.shape != query_vector.shape:
-        return 0.0
+        # Issue #784 — RAG senior-review critique #4. A shape mismatch
+        # means the chunk and the query were embedded in incompatible
+        # vector spaces (e.g. sidecar built with one model, query
+        # embedded with another). Previously this returned 0.0 which
+        # silently produced a zero-similarity score across the entire
+        # index → retrieval ranking corrupted but the API still
+        # returned "successful" answers. Raising surfaces the
+        # integrity bug at the failing call site instead.
+        raise ValueError(
+            f"dense_similarity: vector shape mismatch — "
+            f"query={query_vector.shape} vs chunk={doc_vector.shape}. "
+            "This indicates the index was built with a different "
+            "embedding model / dimension than the query was embedded "
+            "with. Rebuild the index or check BIDMATE_INDEX_BACKEND / "
+            "EMBEDDING_BACKEND consistency."
+        )
     score = float(np.dot(query_vector, doc_vector))
     return max(0.0, min(1.0, (score + 1.0) / 2.0))
 
