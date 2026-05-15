@@ -35,7 +35,7 @@ that aren't auto-enforced.
 Load-bearing — changes here require PR template **item 5b (real-data delta)** filled in. Canonical machine-readable list lives in [`scripts/_governance.py`](scripts/_governance.py) `LOAD_BEARING_PATHS` (single source of truth read by `.githooks/pre-push`, `scripts/claude-hooks/pretooluse-loadbearing.sh`, and the `--check-5b` CI gate); add or remove entries there first so the three consumers pick it up automatically. The bullets below are the human reading guide.
 
 - `rag_core.py` — core RAG pipeline (retrieval, verifier, answer generation).
-- `ingestion.py`, `visual_ingestion.py` — document loading + parsing.
+- `ingestion.py`, `visual_ingestion.py` — document loading + parsing. HWP backend is `HwpKordocLoader` (ADR 0049, npm subprocess via `npx`); `csv_text` is the unconditional fallback when Node is missing or the subprocess fails.
 - `eval/` — eval scripts and configs (`eval/config.yaml` defines the `naive_baseline` ablation preset).
 - `api/main.py` — FastAPI demo server (the whole `api/` directory is in the SSoT).
 - `docs/adr/` — accepted decision records.
