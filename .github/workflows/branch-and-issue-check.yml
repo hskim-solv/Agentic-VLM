@@ -82,17 +82,31 @@ jobs:
           # When an embedding-related path changes in this PR, verify that
           # reports/embedding_routed.json was also updated AND spread < threshold.
           # Non-embedding PRs: skip entirely.
-          embedding_changes=$(gh api \
-            "/repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}/files" \
-            --jq '[.[] | select(.filename | test("^(rag_embeddings\\.py|eval/routed_config\\.yaml|eval/config\\.yaml)$"))] | length')
+          #
+          # Issue #819: eval/config.yaml has many non-embedding ablation bits
+          # (rerank, verifier_retry, retrieval_mode).  Hit the gate only when
+          # the changed hunks reference an embedding keyword.  rag_embeddings.py
+          # and eval/routed_config.yaml stay always-trigger paths.
+          files_json=$(gh api \
+            "/repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}/files")
+
+          strong_hits=$(echo "$files_json" | jq '[.[] | select(.filename | test("^(rag_embeddings\\.py|eval/routed_config\\.yaml)$"))] | length')
+
+          config_yaml_patch=$(echo "$files_json" | jq -r '.[] | select(.filename == "eval/config.yaml") | .patch // ""')
+          if [[ -n "$config_yaml_patch" ]] && echo "$config_yaml_patch" | grep -Eiq '\b(embedding|embedding_backend|embedding_model|minilm|kure|m3_|embed_)\b'; then
+            weak_hit=1
+          else
+            weak_hit=0
+          fi
+
+          embedding_changes=$((strong_hits + weak_hit))
+
           if [[ "$embedding_changes" -eq 0 ]]; then
             echo "✅ No embedding-related path changes — spread gate skipped."
             exit 0
           fi
           echo "ℹ️  Embedding-related paths changed; checking reports/embedding_routed.json spread."
-          routed_changed=$(gh api \
-            "/repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}/files" \
-            --jq '[.[] | select(.filename == "reports/embedding_routed.json")] | length')
+          routed_changed=$(echo "$files_json" | jq '[.[] | select(.filename == "reports/embedding_routed.json")] | length')
           if [[ "$routed_changed" -eq 0 ]]; then
             echo "❌ Embedding path changed but reports/embedding_routed.json was NOT updated." >&2
             echo "   Run: python scripts/run_routed_measurement.py --backend sentence-transformers" >&2
