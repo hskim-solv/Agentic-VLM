@@ -422,7 +422,7 @@ ablation_runs:
     rerank: true
     verifier_retry: true
     retrieval_mode: flat
-    # Deterministic per (query, chunk_id) via SHA-256; no embedding /
+    # Deterministic per (query, chunk_id) via SHA-256; no vector /
     # BM25 / M3 forward pass — see ``rag_retrieval.retrieve_candidates``.
     retrieval_backend: random
   - name: single_chunk
