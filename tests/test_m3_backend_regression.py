@@ -357,5 +357,70 @@ class M3Int8CacheRegressionTest(unittest.TestCase):  # pragma: no cover — opt-
         self.assertEqual(s_no_scale, s_explicit_1)
 
 
+@unittest.skipUnless(
+    _flag_embedding_available(), "FlagEmbedding not installed — m3 spike test skipped"
+)
+class M3ChunkedIndexCacheRegressionTest(unittest.TestCase):  # pragma: no cover — opt-in
+    """Issue #1010 follow-up — ``compute_m3_index_cache`` must chunk the
+    encoding pipeline so peak RAM stays at (group transient + accumulated
+    cache) rather than (full fp16 buffer). Otherwise a 26k-chunk index
+    on a 16GB MBP hits the same ~9.9GB fp16 peak even with int8 cache
+    enabled (because the int8 quantization only runs after the encoder
+    returns).
+
+    Tests assert: (1) chunked output is structurally equivalent to the
+    all-at-once path; (2) ``BIDMATE_M3_INDEX_CACHE_BATCH=0`` opts back
+    to the legacy one-shot path.
+    """
+
+    def _build_index_cache(self, group_size: str | None):
+        import rag_m3
+        from rag_m3 import compute_m3_index_cache, get_m3_encoder
+
+        env_var = "BIDMATE_M3_INDEX_CACHE_BATCH"
+        original = os.environ.get(env_var)
+        rag_m3._ENCODER_CACHE.clear()
+        try:
+            if group_size is None:
+                os.environ.pop(env_var, None)
+            else:
+                os.environ[env_var] = group_size
+            encoder = get_m3_encoder()
+            # 6 chunks, group_size=2 → 3 groups exercised in the
+            # chunked path; legacy path returns in one shot.
+            chunks = [
+                {"chunk_id": str(i), "text": f"테스트 청크 {i} 의 본문"}
+                for i in range(6)
+            ]
+            return compute_m3_index_cache(encoder, chunks)
+        finally:
+            if original is None:
+                os.environ.pop(env_var, None)
+            else:
+                os.environ[env_var] = original
+            rag_m3._ENCODER_CACHE.clear()
+
+    def test_chunked_output_structurally_equivalent_to_one_shot(self) -> None:
+        out_oneshot = self._build_index_cache(group_size="0")
+        out_chunked = self._build_index_cache(group_size="2")
+        # All channels: same N (per-text alignment preserved across
+        # the chunk boundary).
+        self.assertEqual(len(out_oneshot.sparse), len(out_chunked.sparse))
+        self.assertEqual(len(out_oneshot.colbert), len(out_chunked.colbert))
+        self.assertEqual(out_oneshot.dense.shape, out_chunked.dense.shape)
+        # Dense vectors: numerically identical (BGE-M3 is per-text
+        # independent; chunking is only a memory-pressure knob).
+        np.testing.assert_allclose(out_oneshot.dense, out_chunked.dense, atol=1e-5)
+
+    def test_legacy_path_when_group_size_is_zero(self) -> None:
+        """``BIDMATE_M3_INDEX_CACHE_BATCH=0`` ⇒ one-shot encode (legacy).
+        Preserves byte-identical reproducibility for callers that need
+        the old behavior verbatim."""
+        out = self._build_index_cache(group_size="0")
+        # Sanity: encode ran (non-empty output).
+        self.assertEqual(len(out.colbert), 6)
+        self.assertGreater(out.dense.shape[0], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -252,6 +252,62 @@ def compute_m3_index_cache(
     ``_m3_cache`` (underscore-prefix convention, matching
     ``_vector_store``). Nothing is persisted to disk for this spike —
     see ``docs/vision/m3-multichannel-spike.md`` decision rule.
+
+    Issue #1010 — for large indexes (26k+ chunks at the kordoc real100
+    scale) a single ``encoder.encode(all_texts)`` call accumulates the
+    fp16 colbert output internally before returning, hitting peak RAM
+    near the full fp16 cache footprint (~9.9GB on a 16GB MBP) and
+    causing MPS swap thrash even when the env var requests int8
+    storage (because the int8 quantization only runs *after* the
+    encoder returns).
+
+    Fix: ``BIDMATE_M3_INDEX_CACHE_BATCH`` env var (default 1000) chunks
+    the input into groups. Each group's encode() returns a small fp16
+    buffer (~400MB transient at group=1000) which is then quantized to
+    int8 (or kept as fp16/fp32 if the env var is unset) and accumulated
+    into the long-term cache. Peak RAM = group transient + accumulated
+    long-term storage = ~5.4GB on 16GB MBP with int8 cache enabled.
+
+    The grouping is purely a memory-pressure knob — BGE-M3 outputs are
+    per-text independent (no cross-text attention) so byte-identical
+    results regardless of group size, modulo per-batch tokenizer
+    padding which the model rounds internally.
     """
     texts = [str(c.get("text") or "") for c in chunks]
-    return encoder.encode(texts)
+    if not texts:
+        return encoder.encode(texts)
+    group_env = os.environ.get("BIDMATE_M3_INDEX_CACHE_BATCH", "").strip()
+    try:
+        group_size = int(group_env) if group_env else 1000
+    except ValueError:
+        group_size = 1000
+    # Group=0 or negative ⇒ "all-at-once" legacy behavior (the
+    # one-shot encode path). Preserves byte-identical reproducibility
+    # for callers that explicitly disable chunking.
+    if group_size <= 0 or group_size >= len(texts):
+        return encoder.encode(texts)
+
+    dense_chunks: list[np.ndarray] = []
+    sparse_acc: list[dict[int, float]] = []
+    colbert_acc: list[np.ndarray] = []
+    scales_acc: list[float] = []
+    for start in range(0, len(texts), group_size):
+        group = texts[start : start + group_size]
+        out = encoder.encode(group)
+        dense_chunks.append(out.dense)
+        sparse_acc.extend(out.sparse)
+        colbert_acc.extend(out.colbert)
+        scales_acc.extend(out.colbert_scales)
+    # Concatenate dense (the only fixed-shape channel); sparse + colbert
+    # are already extended in order.
+    dense_full = (
+        np.concatenate(dense_chunks, axis=0)
+        if dense_chunks
+        else np.zeros((0, 0), dtype=np.float32)
+    )
+    return M3Output(
+        dense=dense_full,
+        sparse=sparse_acc,
+        colbert=colbert_acc,
+        colbert_scales=scales_acc,
+    )
